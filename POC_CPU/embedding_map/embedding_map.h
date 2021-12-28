@@ -6,17 +6,23 @@
 #include <mutex>
 #include <thread>
 #include <math.h>
+#include <time.h>
 
 struct parameters{
 	float a;	
 	float v; 	//embedding
 };
 
-
+struct time_interval{
+	timespec memstart, memend;
+	float memcpy_time_1,memcpy_time_2,update_time;
+};//ti用于记录每个线程中的各项任务的时间
 
 class embedding_map{
 private:
 	std::mutex a_mutex;
+	const int g = 1;
+	const int c = 1;
 public:
 	std::unordered_map<int, parameters *> a_map;
 	parameters* get(int Key) {
@@ -73,27 +79,70 @@ public:
 		dataset.close();
 	}
 
+	void batch_work(const std::vector<int>& line,int cursor,parameters *batch,int current_batch_size,time_interval &ti){
+		parameters* tmp;
+		int batchcursor = 0;
+
+		//memcpy,将查询到的数据复制到连续的batch空间中
+		clock_gettime(CLOCK_MONOTONIC, &ti.memstart);
+		for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + current_batch_size; iter++) {
+			tmp = get(*iter);
+			batch[batchcursor].a = tmp->a;
+			batch[batchcursor].v = tmp->v;
+			batchcursor++;
+		}
+		clock_gettime(CLOCK_MONOTONIC, &ti.memend);
+		ti.memcpy_time_1 += ((double)(ti.memend.tv_sec - ti.memstart.tv_sec)*1000000000 + ti.memend.tv_nsec - ti.memstart.tv_nsec)/1000000;
+
+
+		//计算更新embedding
+		clock_gettime(CLOCK_MONOTONIC, &ti.memstart);
+		for(int i = 0;i < current_batch_size;++i){
+			batch[i].a += g * g;
+			batch[i].v -= (c * g * 1.0) / sqrt(batch[i].a);
+		}
+		clock_gettime(CLOCK_MONOTONIC, &ti.memend);
+		ti.update_time += ((double)(ti.memend.tv_sec - ti.memstart.tv_sec)*1000000000 + ti.memend.tv_nsec - ti.memstart.tv_nsec)/1000000;
+
+		//memcpy，将更新后的数据拷回
+		batchcursor = 0;
+		clock_gettime(CLOCK_MONOTONIC, &ti.memstart);
+		for(auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + current_batch_size; iter++) {
+			tmp = get(*iter);
+			tmp->a = batch[batchcursor].a ;
+			tmp->v = batch[batchcursor].v ;
+			batchcursor++;
+		}
+		clock_gettime(CLOCK_MONOTONIC, &ti.memend);
+		ti.memcpy_time_2 += ((double)(ti.memend.tv_sec - ti.memstart.tv_sec)*1000000000 + ti.memend.tv_nsec - ti.memstart.tv_nsec)/1000000;
+	}
 
 
 	void work(const std::vector<int>& line,int start,int end,int worker_id)
 	{	
 		parameters* tmp;
-		int g = 1;
-		int c = 1;
-		for (auto iter = line.cbegin() + start; iter != line.cbegin() + end; iter++) {
-			tmp = get(*iter);
-			
-			tmp->a+=g*g;
-			tmp->v-=(c*g*1.0)/sqrt(tmp->a);
-			/*
-			for (int i = 0; i < 10000; i++) {
-				tmp->a+=1;
-				tmp->v+=1;
-			}
-			*/
-			
+		int cursor = start;
+		int batchcursor = 0;
+		const int batchSize = 256 * 64;
+		parameters *batch= new parameters[batchSize];
+		time_interval ti;
+		ti.memcpy_time_1 = 0;
+		ti.memcpy_time_2 = 0;
+		ti.update_time = 0;
+
+		while(end - cursor >= batchSize){
+			batch_work(line,cursor,batch,batchSize,ti);
+			cursor += batchSize;
 		}
+
+		batch_work(line,cursor,batch,end - cursor,ti);
+
+		delete []batch;
+
 		std::cout << "线程" << worker_id << "已经结束" << std::endl;
+		std::cout << "memcpy time 1:" << ti.memcpy_time_1 << "ms" << std::endl;
+		std::cout << "memcpy time 2:" << ti.memcpy_time_2 << "ms" << std::endl;
+		std::cout << "update time:" << ti.update_time << "ms" << std::endl;
 	}
 
 	void updateembedding(const std::vector<int>& line) {
@@ -101,7 +150,7 @@ public:
 		auto n = std::thread::hardware_concurrency();
 		std::cout << "CPU核心数为:\t" << n << std::endl;
 
-		const int nThreadNum = 16; 
+		const int nThreadNum = 4; 
 		int nScope = line.size() / nThreadNum;
 
 		std::thread th_arr[nThreadNum];

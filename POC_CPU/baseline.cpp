@@ -8,57 +8,46 @@
 #include "time/timecalculate.h"
 #include "FileRW/csvRW.h"
 
-template <class T> 
-void showvec(const std::vector<T>& line) {
-	for (auto iter = line.cbegin(); iter != line.cend(); iter++) {
-		std::cout << (*iter) << std::endl;
-	}
-};
-
 int main() {
-	std::ofstream ofembedding;
-	std::string lineStr;
-	timecalculate timecal;
+	std::ofstream ofEmbeddingMap;
+	CTimeCalculate iTimeCal;
 
-	std::vector<int> lines;
+	std::vector<int> vLines;
 
-	int adgroup_id;
-
-	//将所需数据存到lines向量中
-	timecal.startwork("reading");
+	//将所需数据存到vLines向量中
+	iTimeCal.StartWork("reading");
 	
 	std::string dataloc =  "../dataset/ad_feature.csv";
-	readcsv(dataloc,lines,1,1);
+	readcsv(dataloc,vLines,1,1);
 
-	timecal.endwork("reading");
+	iTimeCal.EndWork("reading");
 
 	//从文件读取embedding向量，并建立hashmap
-	timecal.startwork("initialzing");
+	iTimeCal.StartWork("initialzing");
 
-	embedding_map em;
-	std::vector<parameters> em_paras;
-	em.initembedding("embedding_map/embedding.csv",em_paras,1);
+	CEmbeddingMap em;
+	std::vector<Parameters> em_paras;
+	em.InitEmbedding("embedding_map/embedding.csv",em_paras,1);
 
-	timecal.endwork("initialzing");
+	iTimeCal.EndWork("initialzing");
 	
 	//更新embedding表
-	timecal.startwork("updating");
+	iTimeCal.StartWork("updating");
 
-	em.updateembedding(lines);
+	em.UpdateEV(vLines);
 
-	timecal.endwork("updating");
+	iTimeCal.EndWork("updating");
 
 	//将更新后的embedding写入csv文件中验证
-	timecal.startwork("storing");
+	iTimeCal.StartWork("storing");
 
-	ofembedding.open("embedding_map/ofembedding.csv");
+	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	for (auto iter = em.a_map.begin(); iter != em.a_map.cend(); iter++) {
-		ofembedding << (*iter). first << "," << (*iter).second->a<< "," << (*iter).second->v<< "\n";
+		ofEmbeddingMap << (*iter). first << "," << (*iter).second->a[1]<< "," << (*iter).second->v[1]<< "\n";
 	} 
-	ofembedding.close();
+	ofEmbeddingMap.close();
 
-	timecal.endwork("storing");
-
+	iTimeCal.EndWork("storing");
 
 	return 0;
 }

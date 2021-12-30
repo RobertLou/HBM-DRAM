@@ -5,17 +5,17 @@
 #include <time.h>
 #include <string>
 
-class timecalculate {
+class CTimeCalculate {
 public:
-	timespec start, end;
+	timespec tStart, tEnd;
 
-	void startwork(std::string str) {
+	void StartWork(std::string str) {
 		std::cout << "start " << str <<"......" << std::endl;
-		clock_gettime(CLOCK_MONOTONIC, &start);
+		clock_gettime(CLOCK_MONOTONIC, &tStart);
 	}
-	void endwork(std::string str) {
-		clock_gettime(CLOCK_MONOTONIC, &end);
-		std::cout << str << " time: " << ((double)(end.tv_sec - start.tv_sec)*1000000000 + end.tv_nsec - start.tv_nsec)/1000000 << "ms" << std::endl;
+	void EndWork(std::string str) {
+		clock_gettime(CLOCK_MONOTONIC, &tEnd);
+		std::cout << str << " time: " << ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000 << "ms" << std::endl;
 		std::cout << "end " << str << "......\n\n"  << std::endl;
 	}
 };

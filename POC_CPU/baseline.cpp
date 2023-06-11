@@ -5,8 +5,8 @@
 #include <sstream> 
 #include <unordered_map>
 #include "embedding_map/embedding_map.h"
-#include "time/timecalculate.h"
-#include "FileRW/csvRW.h"
+#include "../time/timecalculate.h"
+#include "../FileRW/csvRW.h"
 
 int main() {
 	std::ofstream ofEmbeddingMap;

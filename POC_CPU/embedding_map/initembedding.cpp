@@ -3,7 +3,7 @@
 int main()
 {
     std::vector<int> lines;
-    std::string dataloc =  "../../../dataset/ad_feature.csv";
+    std::string dataloc =  "../../dataset/ad_feature.csv";
 	readcsv(dataloc,lines,1,1);
 
     std::ofstream embedding;

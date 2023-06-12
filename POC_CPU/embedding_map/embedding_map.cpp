@@ -15,7 +15,7 @@ void CEmbeddingMap::Erase(int key){
 	a_map.erase(key);
 }
 
-void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters> &vLines,int bFirstLineDelete){
+void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters> &line,int bFirstLineDelete){
     std::ifstream ifDataSet;
     ifDataSet.open(strFileloc);
 
@@ -41,10 +41,10 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
             tmp.a[i] = a_f;
             tmp.v[i] = v_f;
         }
-        vLines.emplace_back(tmp);
+        line.emplace_back(tmp);
         vKey.emplace_back(nKeyTmp);
     }
-    auto iter2 = vLines.begin();
+    auto iter2 = line.begin();
     for (auto iter1 = vKey.begin(); iter1 != vKey.end(); iter1++) {
         Set(*iter1,&(*iter2));
         iter2++;

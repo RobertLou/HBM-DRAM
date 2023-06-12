@@ -12,13 +12,13 @@ int main() {
 	std::ofstream ofEmbeddingMap;
 	CTimeCalculate iTimeCal;
 
-	std::vector<int> vLines;
+	std::vector<int> line;
 
 	//将所需数据存到vLines向量中
 	iTimeCal.StartWork("reading");
 	
 	std::string dataloc =  "../dataset/ad_feature.csv";
-	readcsv(dataloc,vLines,1,1);
+	readcsv(dataloc,line,1,1);
 
 	iTimeCal.EndWork("reading");
 
@@ -32,7 +32,7 @@ int main() {
 	/*
 	//更新embedding表
 	iTimeCal.StartWork("updating");
-	em.MultiThreadUpdateEV(vLines);
+	em.MultiThreadUpdateEV(line);
 	iTimeCal.EndWork("updating");
 
 	//将更新后的embedding写入csv文件中验证
@@ -46,20 +46,20 @@ int main() {
 	*/
 
 	iTimeCal.StartWork("Gathering");
-	int totalLength = vLines.size();
+	int totalLength = line.size();
 	Parameters *gatherResult = new Parameters[totalLength];
-	em.MultiThreadGatherEV(vLines, gatherResult);
+	em.MultiThreadGatherEV(line, gatherResult);
 	iTimeCal.EndWork("Gathering");
 
 	iTimeCal.StartWork("storing");
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	ofEmbeddingMap << "key,a,v\n";
 	for (int i = 0; i < totalLength; i++) {
-		ofEmbeddingMap << vLines[i] << "," << gatherResult[i].a[1] << "," << gatherResult[i].v[1] << "\n";
+		ofEmbeddingMap << line[i] << "," << gatherResult[i].a[1] << "," << gatherResult[i].v[1] << "\n";
 	} 
 	ofEmbeddingMap.close();
 	iTimeCal.EndWork("storing");
-	
+
 	delete []gatherResult;
 
 	return 0;

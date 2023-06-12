@@ -13,16 +13,18 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-const int nEvListSize = 8;
-const int nBatchSize = 256 * 16 ;
+#define THREAD_NUM 4
+#define EMBEDDING_DIM 8
+#define BATCH_SIZE 256 * 16
+
 const int nDimBlock = 256;
 
 const int g = 1;
 const int c = 1;
 
 struct Parameters{
-	float a[nEvListSize];	
-	float v[nEvListSize]; 	//embedding
+	float a[EMBEDDING_DIM];	
+	float v[EMBEDDING_DIM]; 	//embedding
 };
 
 struct TimeInterval{
@@ -40,15 +42,14 @@ private:
 	
 public:
 	std::unordered_map<int, Parameters *> a_map;
+	
 	Parameters* Get(int Key);
-
 	void Set(int Key, Parameters* Value);
-
 	void Erase(int key);
 
-	void InitEmbedding(std::string fileloc,std::vector<Parameters> &lines,int firstlinedelete);
+	void InitEmbedding(std::string strFileloc, std::vector<Parameters> &line, int bFirstLineDelete);
 
-	void BatchWork(const std::vector<int>& line,int cursor,Parameters *batch,Parameters *batch_address,int current_batch_size,TimeInterval &ti);
-	void Work(const std::vector<int>& line,int front,int end,int worker_id);
-	void UpdateEV(const std::vector<int>& line);
+	void UpdateBatch(const std::vector<int>& line,int cursor,Parameters *batch,Parameters *batch_address,int current_batch_size,TimeInterval &ti);
+	void UpdateWork(const std::vector<int>& line, int start, int end, int workerId);
+	void MultiThreadUpdateEV(const std::vector<int>& line);
 };

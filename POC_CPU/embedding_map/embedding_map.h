@@ -34,9 +34,13 @@ public:
 	Parameters* get(int Key);
 	void Set(int Key, Parameters* Value);
 	void Erase(int key);
-	void InitEmbedding(std::string strFileloc,std::vector<Parameters> &lines,int firstlinedelete);
+	void InitEmbedding(std::string strFileloc, std::vector<Parameters> &lines, int firstlinedelete);
 
-	void UpdateBatch(const std::vector<int>& line,int cursor,Parameters *batch,int current_batch_size,TimeInterval &ti);
-	void UpdateWork(const std::vector<int>& line,int start,int end,int worker_id);
+	void UpdateBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize, TimeInterval &ti);
+	void UpdateWork(const std::vector<int>& line, int start, int end, int workerId);
 	void MultiThreadUpdateEV(const std::vector<int>& line);
+
+	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);
+	void GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int worker_id);
+	void MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult);
 };

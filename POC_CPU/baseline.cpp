@@ -24,30 +24,43 @@ int main() {
 
 	//从文件读取embedding向量，并建立hashmap
 	iTimeCal.StartWork("initialzing");
-
 	CEmbeddingMap em;
 	std::vector<Parameters> em_paras;
 	em.InitEmbedding("embedding_map/embedding.csv",em_paras,1);
-
 	iTimeCal.EndWork("initialzing");
-	
+
+	/*
 	//更新embedding表
 	iTimeCal.StartWork("updating");
-
 	em.MultiThreadUpdateEV(vLines);
-
 	iTimeCal.EndWork("updating");
 
 	//将更新后的embedding写入csv文件中验证
 	iTimeCal.StartWork("storing");
-
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	for (auto iter = em.a_map.begin(); iter != em.a_map.cend(); iter++) {
 		ofEmbeddingMap << (*iter). first << "," << (*iter).second->a[1]<< "," << (*iter).second->v[1]<< "\n";
 	} 
 	ofEmbeddingMap.close();
-
 	iTimeCal.EndWork("storing");
+	*/
+
+	iTimeCal.StartWork("Gathering");
+	int totalLength = vLines.size();
+	Parameters *gatherResult = new Parameters[totalLength];
+	em.MultiThreadGatherEV(vLines, gatherResult);
+	iTimeCal.EndWork("Gathering");
+
+	iTimeCal.StartWork("storing");
+	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
+	ofEmbeddingMap << "key,a,v\n";
+	for (int i = 0; i < totalLength; i++) {
+		ofEmbeddingMap << vLines[i] << "," << gatherResult[i].a[1] << "," << gatherResult[i].v[1] << "\n";
+	} 
+	ofEmbeddingMap.close();
+	iTimeCal.EndWork("storing");
+	
+	delete []gatherResult;
 
 	return 0;
 }

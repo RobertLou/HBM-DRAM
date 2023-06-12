@@ -9,12 +9,13 @@
 #include <time.h>
 #include <sstream> 
 
-const int nEvListSize = 8;
-const int nBatchSize = 256 * 16;
+#define THREAD_NUM 4
+#define EMBEDDING_DIM 8
+#define BATCH_SIZE 256 * 16
 
 struct Parameters{
-	float a[nEvListSize];	
-	float v[nEvListSize]; 	//embedding
+	float a[EMBEDDING_DIM];	
+	float v[EMBEDDING_DIM]; 	//embedding
 };
 
 struct TimeInterval{
@@ -34,7 +35,8 @@ public:
 	void Set(int Key, Parameters* Value);
 	void Erase(int key);
 	void InitEmbedding(std::string strFileloc,std::vector<Parameters> &lines,int firstlinedelete);
-	void BatchWork(const std::vector<int>& line,int cursor,Parameters *batch,int current_batch_size,TimeInterval &ti);
-	void Work(const std::vector<int>& line,int start,int end,int worker_id);
-	void UpdateEV(const std::vector<int>& line);
+
+	void UpdateBatch(const std::vector<int>& line,int cursor,Parameters *batch,int current_batch_size,TimeInterval &ti);
+	void UpdateWork(const std::vector<int>& line,int start,int end,int worker_id);
+	void MultiThreadUpdateEV(const std::vector<int>& line);
 };

@@ -37,7 +37,7 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
         ss >> a_f;
         ss >> cComma;
         ss >> v_f;
-        for(int i = 0;i < nEvListSize;++i){
+        for(int i = 0;i < EMBEDDING_DIM;++i){
             tmp.a[i] = a_f;
             tmp.v[i] = v_f;
         }
@@ -53,7 +53,7 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
     ifDataSet.close();
 }
 
-void CEmbeddingMap::BatchWork(const std::vector<int>& line,int cursor,Parameters *batch,int nCurrentBatchSize,TimeInterval &ti){
+void CEmbeddingMap::UpdateBatch(const std::vector<int>& line,int cursor,Parameters *batch,int nCurrentBatchSize,TimeInterval &ti){
     Parameters* tmp;
     int nBatchCursor = 0;
 
@@ -61,7 +61,7 @@ void CEmbeddingMap::BatchWork(const std::vector<int>& line,int cursor,Parameters
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + nCurrentBatchSize; iter++) {
         tmp = get(*iter);
-        for(int i = 0;i < nEvListSize;++i){
+        for(int i = 0;i < EMBEDDING_DIM;++i){
             batch[nBatchCursor].a[i] = tmp->a[i];
             batch[nBatchCursor].v[i] = tmp->v[i];
         }
@@ -74,7 +74,7 @@ void CEmbeddingMap::BatchWork(const std::vector<int>& line,int cursor,Parameters
     //计算更新embedding
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     for(int i = 0;i < nCurrentBatchSize;++i){
-        for(int j = 0;j < nEvListSize;j++){
+        for(int j = 0;j < EMBEDDING_DIM;j++){
             batch[i].a[j] += g * g;
             batch[i].v[j] -= (c * g * 1.0) / sqrt(batch[i].a[j]);
         }
@@ -87,7 +87,7 @@ void CEmbeddingMap::BatchWork(const std::vector<int>& line,int cursor,Parameters
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     for(auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + nCurrentBatchSize; iter++) {
         tmp = get(*iter);
-        for(int i = 0;i < nEvListSize;++i){
+        for(int i = 0;i < EMBEDDING_DIM;++i){
             tmp->a[i] = batch[nBatchCursor].a[i] ;
             tmp->v[i] = batch[nBatchCursor].v[i] ;
         }
@@ -99,23 +99,23 @@ void CEmbeddingMap::BatchWork(const std::vector<int>& line,int cursor,Parameters
 }
 
 
-void CEmbeddingMap::Work(const std::vector<int>& vLine,int nStart,int nEnd,int nWorkerId)
+void CEmbeddingMap::UpdateWork(const std::vector<int>& vLine,int nStart,int nEnd,int nWorkerId)
 {	
     Parameters* tmp;
     int nCursor = nStart;
     int nBatchCursor = 0;
-    Parameters *pBatch= new Parameters[nBatchSize];
+    Parameters *pBatch= new Parameters[BATCH_SIZE];
     TimeInterval ti;
     ti.fMemcpyTime1 = 0;
     ti.fMemcpyTime2 = 0;
     ti.fUpdateTime = 0;
 
-    while(nEnd - nCursor >= nBatchSize){
-        BatchWork(vLine,nCursor,pBatch,nBatchSize,ti);
-        nCursor += nBatchSize;
+    while(nEnd - nCursor >= BATCH_SIZE){
+        UpdateBatch(vLine,nCursor,pBatch,BATCH_SIZE,ti);
+        nCursor += BATCH_SIZE;
     }
 
-    BatchWork(vLine,nCursor,pBatch,nEnd - nCursor,ti);
+    UpdateBatch(vLine,nCursor,pBatch,nEnd - nCursor,ti);
 
     delete []pBatch;
 
@@ -125,18 +125,15 @@ void CEmbeddingMap::Work(const std::vector<int>& vLine,int nStart,int nEnd,int n
     std::cout << "update time:" << ti.fUpdateTime << "ms" << std::endl;
 }
 
-void CEmbeddingMap::UpdateEV(const std::vector<int>& line) {
-    
-    const int nThreadNum = 4; 
-    int nScope = line.size() / nThreadNum;
+void CEmbeddingMap::MultiThreadUpdateEV(const std::vector<int>& line) {
+    int scope = line.size() / THREAD_NUM;
+    std::thread th_arr[THREAD_NUM];
 
-    std::thread th_arr[nThreadNum];
-
-    for (unsigned int i = 0; i < nThreadNum - 1; ++i) {
-        th_arr[i] = std::thread(&CEmbeddingMap::Work,this, std::ref(line), i * nScope, (i + 1) * nScope, i);
+    for (unsigned int i = 0; i < THREAD_NUM - 1; ++i) {
+        th_arr[i] = std::thread(&CEmbeddingMap::UpdateWork,this, std::ref(line), i * scope, (i + 1) * scope, i);
     }
-    th_arr[nThreadNum - 1] = std::thread(&CEmbeddingMap::Work,this, std::ref(line), (nThreadNum - 1) * nScope, line.size(), nThreadNum - 1);
-    for (unsigned int i = 0; i < nThreadNum; ++i) {
+    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::UpdateWork,this, std::ref(line), (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1);
+    for (unsigned int i = 0; i < THREAD_NUM; ++i) {
         th_arr[i].join();
     }
 }

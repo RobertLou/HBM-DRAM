@@ -34,7 +34,7 @@ int main() {
 	//更新embedding表
 	iTimeCal.StartWork("updating");
 
-	em.UpdateEV(vLines);
+	em.MultiThreadUpdateEV(vLines);
 
 	iTimeCal.EndWork("updating");
 

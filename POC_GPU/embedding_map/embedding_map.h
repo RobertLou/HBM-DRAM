@@ -14,7 +14,7 @@
 #include "device_launch_parameters.h"
 
 #define THREAD_NUM 4
-#define EMBEDDING_DIM 8
+#define EMBEDDING_DIM 128
 #define BATCH_SIZE 256 * 16
 
 const int nDimBlock = 256;

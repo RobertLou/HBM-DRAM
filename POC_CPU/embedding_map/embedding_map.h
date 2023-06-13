@@ -10,7 +10,7 @@
 #include <sstream> 
 
 #define THREAD_NUM 4
-#define EMBEDDING_DIM 8
+#define EMBEDDING_DIM 128
 #define BATCH_SIZE 256 * 16
 
 struct Parameters{

@@ -1,10 +1,23 @@
 #include "embedding_map.h"
 
-__global__ void UpdateOneEmbedding(Parameters *Batch){
+__global__ void UpdateOneEmbedding(Parameters **deviceAddressBatch, int currentBatchSize){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
-	for(int j = 0;j < EMBEDDING_DIM;j++){
-        Batch[i].a[j] += g * g;
-        Batch[i].v[j] -= (c * g * 1.0) / sqrt(Batch[i].a[j]);
+    if(i < currentBatchSize){
+        for(int j = 0;j < EMBEDDING_DIM;j++){
+            deviceAddressBatch[i]->a[j] += g * g;
+            deviceAddressBatch[i]->v[j] -= (c * g * 1.0) / sqrt(deviceAddressBatch[i]->a[j]);
+        }
+    }
+
+}
+
+__global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize){
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if(i < currentBatchSize){
+        for(int j = 0;j < EMBEDDING_DIM;j++){
+            devicegatherResult[i].a[j] = deviceAddressBatch[i]->a[j];
+            devicegatherResult[i].v[j] = deviceAddressBatch[i]->v[j];
+        }
     }
 }
 
@@ -53,74 +66,60 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
         line.emplace_back(tmp);
         vKey.emplace_back(nKeyTmp);
     }
+
+    int length = line.size();
+
+    cudaMalloc((void **)&GPUEmbeddingAddress, length * sizeof(Parameters));
+    cudaMemcpy(GPUEmbeddingAddress, &line[0], length * sizeof(Parameters), cudaMemcpyHostToDevice);
     
-    auto iter2 = line.begin();
+    int i = 0;
     for (auto iter1 = vKey.begin(); iter1 != vKey.end(); iter1++) {
-        Set(*iter1,&(*iter2));
-        iter2++;
+        Set(*iter1, GPUEmbeddingAddress + i);
+        i++;
     }
 
     ifDataSet.close();
 }
 
-void CEmbeddingMap::UpdateBatch(const std::vector<int>& line, int nCursor, Parameters *Batch, Parameters *BatchAddressGPU, int nCurrentBatchSize, TimeInterval &ti){
-    Parameters* tmp;  
+void CEmbeddingMap::UpdateBatch(const std::vector<int>& line, int nCursor, Parameters **addressBatch, int currentBatchSize, TimeInterval &ti){
     int nBatchCursor = 0;
 
-    //memcpy,将查询到的数据复制到连续的Batch空间中
+    //查询key所对应的GPU地址
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
-    for (auto iter = line.cbegin() + nCursor; iter != line.cbegin() + nCursor + nCurrentBatchSize; iter++) {
-        tmp = Get(*iter);
-        for(int i = 0;i < EMBEDDING_DIM;++i){
-            Batch[nBatchCursor].a[i] = tmp->a[i];
-            Batch[nBatchCursor].v[i] = tmp->v[i];
-        }
+    for (auto iter = line.cbegin() + nCursor; iter != line.cbegin() + nCursor + currentBatchSize; iter++) {
+        addressBatch[nBatchCursor] = Get(*iter);
         nBatchCursor++;
     }
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
     ti.fMemcpyTime1 += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
 
 
+    //将embedding所对应的GPU地址拷贝到GPU
+    Parameters **deviceAddressBatch;
+    cudaMalloc((void **)&deviceAddressBatch, currentBatchSize * sizeof(Parameters *));
+    cudaMemcpy(deviceAddressBatch, addressBatch, currentBatchSize * sizeof(Parameters *), cudaMemcpyHostToDevice);
+
     //计算更新embedding
-    cudaMemcpy(BatchAddressGPU, Batch, nCurrentBatchSize * sizeof(Parameters), cudaMemcpyHostToDevice);
-    UpdateOneEmbedding<<<BATCH_SIZE/nDimBlock,nDimBlock>>>(BatchAddressGPU);
-    cudaMemcpy(Batch, BatchAddressGPU, nCurrentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
-        
-    //memcpy，将更新后的数据拷回
-    nBatchCursor = 0;
-    clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
-    for(auto iter = line.cbegin() + nCursor; iter != line.cbegin() + nCursor + nCurrentBatchSize; iter++) {
-        tmp = Get(*iter);
-        for(int i = 0;i < EMBEDDING_DIM;++i){
-            tmp->a[i] = Batch[nBatchCursor].a[i] ;
-            tmp->v[i] = Batch[nBatchCursor].v[i] ;
-        }
-        nBatchCursor++;
-    }
-    clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
-    ti.fMemcpyTime2 += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.	tMemStart.tv_nsec)/1000000;
+    UpdateOneEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(deviceAddressBatch, currentBatchSize);
 }
 
 void CEmbeddingMap::UpdateWork(const std::vector<int>& line, int start, int end, int workerId)
 	{	
-		int cursor = start;
-		Parameters *Batch= new Parameters[BATCH_SIZE];
-
-		Parameters *BatchAddressGPU;
 		TimeInterval ti;
+        int cursor = start;
+        Parameters **addressBatch= new Parameters*[BATCH_SIZE];
 
-		cudaMalloc((void **)&BatchAddressGPU, BATCH_SIZE * sizeof(Parameters));
+
 		while(end - cursor >= BATCH_SIZE){
-			UpdateBatch(line, cursor, Batch, BatchAddressGPU, BATCH_SIZE, ti);
+			UpdateBatch(line, cursor, addressBatch, BATCH_SIZE, ti);
 			cursor += BATCH_SIZE;
 		}
-		UpdateBatch(line, cursor, Batch, BatchAddressGPU, end - cursor, ti);
-		delete []Batch;
-		cudaFree(BatchAddressGPU);
+		UpdateBatch(line, cursor, addressBatch, end - cursor, ti);
+		delete []addressBatch;
 
 		std::cout << "线程" << workerId << "已经结束" << std::endl;
 		std::cout << "memcpy time 1:" << ti.fMemcpyTime1 << "ms" << std::endl;		//CPU memcpy time
-		std::cout << "memcpy time 2:" << ti.fMemcpyTime2 << "ms" << std::endl;
+		//std::cout << "memcpy time 2:" << ti.fMemcpyTime2 << "ms" << std::endl;
 	}
 
 void CEmbeddingMap::MultiThreadUpdateEV(const std::vector<int>& line) {
@@ -135,4 +134,61 @@ void CEmbeddingMap::MultiThreadUpdateEV(const std::vector<int>& line) {
     for (unsigned int i = 0; i < THREAD_NUM; ++i) {
         th_arr[i].join();
     }
+}
+
+void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize){ 
+    int nBatchCursor = 0;
+    Parameters **addressBatch= new Parameters*[BATCH_SIZE];
+
+    //查询key所对应的GPU地址
+    for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
+        addressBatch[nBatchCursor] = Get(*iter);
+        nBatchCursor++;
+    }
+
+    //将embedding所对应的GPU地址拷贝到GPU
+    Parameters **deviceAddressBatch;
+    cudaMalloc((void **)&deviceAddressBatch, currentBatchSize * sizeof(Parameters *));
+    cudaMemcpy(deviceAddressBatch, addressBatch, currentBatchSize * sizeof(Parameters *), cudaMemcpyHostToDevice);
+
+    //创建查找到的embedding数据存储的空间
+    Parameters *devicegatherResult;
+    cudaMalloc((void **)&devicegatherResult, currentBatchSize * sizeof(Parameters));
+
+    //Gather 
+    GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
+    cudaDeviceSynchronize();
+
+    //将结果拷贝回CPU检验
+    cudaMemcpy(&gatherResult[cursor], devicegatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
+    cudaFree(devicegatherResult);
+    cudaFree(deviceAddressBatch);
+    delete []addressBatch;
+}
+
+void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId){
+    int cursor = start;
+
+    while(end - cursor >= BATCH_SIZE){
+        GatherBatch(line, cursor, gatherResult, BATCH_SIZE);
+        cursor += BATCH_SIZE;
+    }
+    GatherBatch(line, cursor, gatherResult, end - cursor);
+}
+
+void CEmbeddingMap::MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult) {
+    int scope = line.size() / THREAD_NUM;
+    std::thread th_arr[THREAD_NUM];
+
+    for (unsigned int i = 0; i < THREAD_NUM - 1; ++i) {
+        th_arr[i] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, i * scope, (i + 1) * scope, i);
+    }
+    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1);
+    for (unsigned int i = 0; i < THREAD_NUM; ++i) {
+        th_arr[i].join();
+    }
+}
+
+void CEmbeddingMap::DeleteEmbedding(){
+    cudaFree(GPUEmbeddingAddress);
 }

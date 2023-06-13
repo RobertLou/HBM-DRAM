@@ -31,7 +31,7 @@ private:
 public:
 	std::unordered_map<int, Parameters *> a_map;
 
-	Parameters* get(int Key);
+	Parameters* Get(int Key);
 	void Set(int Key, Parameters* Value);
 	void Erase(int key);
 	void InitEmbedding(std::string strFileloc, std::vector<Parameters> &lines, int firstlinedelete);

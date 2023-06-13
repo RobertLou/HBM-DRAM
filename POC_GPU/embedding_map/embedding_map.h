@@ -33,13 +33,14 @@ struct TimeInterval{
 };//ti用于记录每个线程中的各项任务的时间
 
 
-__global__ void UpdateOneEmbedding(Parameters *batch);
-
+__global__ void UpdateOneEmbedding(Parameters *batch, int currentBatchSize);
+__global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize);
 
 class CEmbeddingMap{
 private:
 	std::mutex a_mutex;
-	
+	Parameters *GPUEmbeddingAddress;
+
 public:
 	std::unordered_map<int, Parameters *> a_map;
 	
@@ -49,7 +50,13 @@ public:
 
 	void InitEmbedding(std::string strFileloc, std::vector<Parameters> &line, int bFirstLineDelete);
 
-	void UpdateBatch(const std::vector<int>& line,int cursor,Parameters *batch,Parameters *batch_address,int current_batch_size,TimeInterval &ti);
+	void UpdateBatch(const std::vector<int>& line, int nCursor, Parameters **addressBatch, int nCurrentBatchSize, TimeInterval &ti);
 	void UpdateWork(const std::vector<int>& line, int start, int end, int workerId);
 	void MultiThreadUpdateEV(const std::vector<int>& line);
+
+	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);
+	void GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int worker_id);
+	void MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult);
+
+	void DeleteEmbedding();
 };

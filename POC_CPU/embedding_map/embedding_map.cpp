@@ -1,6 +1,6 @@
 #include "embedding_map.h"
 
-Parameters* CEmbeddingMap::get(int Key){
+Parameters* CEmbeddingMap::Get(int Key){
 	std::lock_guard<std::mutex> guard(a_mutex);
 	return a_map.at(Key);
 };
@@ -60,7 +60,7 @@ void CEmbeddingMap::UpdateBatch(const std::vector<int>& line,int cursor,Paramete
     //memcpy,将查询到的数据复制到连续的batch空间中
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
-        tmp = get(*iter);
+        tmp = Get(*iter);
         for(int i = 0;i < EMBEDDING_DIM;++i){
             batch[nBatchCursor].a[i] = tmp->a[i];
             batch[nBatchCursor].v[i] = tmp->v[i];
@@ -86,7 +86,7 @@ void CEmbeddingMap::UpdateBatch(const std::vector<int>& line,int cursor,Paramete
     nBatchCursor = 0;
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     for(auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
-        tmp = get(*iter);
+        tmp = Get(*iter);
         for(int i = 0;i < EMBEDDING_DIM;++i){
             tmp->a[i] = batch[nBatchCursor].a[i] ;
             tmp->v[i] = batch[nBatchCursor].v[i] ;
@@ -143,7 +143,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
     //memcpy,将查询到的数据复制到连续的batch空间中
     for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
-        tmp = get(*iter);
+        tmp = Get(*iter);
         for(int i = 0;i < EMBEDDING_DIM;++i){
             gatherResult[cursor + nBatchCursor].a[i] = tmp->a[i];
             gatherResult[cursor + nBatchCursor].v[i] = tmp->v[i];

@@ -44,7 +44,7 @@ int main() {
 	ofEmbeddingMap.close();
 	iTimeCal.EndWork("storing");
 	*/
-
+	
 	iTimeCal.StartWork("Gathering");
 	int totalLength = line.size();
 	Parameters *gatherResult = new Parameters[totalLength];
@@ -61,6 +61,6 @@ int main() {
 	iTimeCal.EndWork("storing");
 
 	delete []gatherResult;
-
+	
 	return 0;
 }

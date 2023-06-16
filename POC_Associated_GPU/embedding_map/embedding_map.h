@@ -18,7 +18,7 @@
 #define BATCH_SIZE 256 * 16
 #define CACHE_SIZE 262144
 #define WAYS 8
-#define CACHE_NUM CACHE_SIZE / WAYS
+#define CACHE_NUM (CACHE_SIZE / WAYS)
 
 const int nDimBlock = 256;
 
@@ -38,13 +38,13 @@ struct TimeInterval{
 };//ti用于记录每个线程中的各项任务的时间
 
 __global__ void InitEmptyCache(Parameters *GPUEmbeddingAddress);
-__global__ void UpdateOneEmbedding(Parameters *batch, int currentBatchSize);
-__global__ void InitEmbedding(Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length);
+__global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length);
 __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize);
 
 class CEmbeddingMap{
 private:
 	Parameters *GPUEmbeddingAddress;
+	int *locks;
 
 public:
 
@@ -53,6 +53,9 @@ public:
 
 	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);
 	void GatherWork(const std::vector<int>& line, Parameters *gatherResult);
+	
+	//Move all embeddings from GPU cache to memory 
+	void MoveAllEmbeddings(Parameters *CPUEmbeddingAddress);
 
 	void DeleteEmbedding();
 };

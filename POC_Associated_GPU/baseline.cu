@@ -44,12 +44,26 @@ int main() {
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	ofEmbeddingMap << "key,a,v\n";
 	for (int i = 0; i < totalLength; i++) {
-		ofEmbeddingMap << line[i] << "," << gatherResult[i].a[1] << "," << gatherResult[i].v[1] << "\n";
+		ofEmbeddingMap << gatherResult[i].key << "," << gatherResult[i].a[1] << "," << gatherResult[i].v[1] << "\n";
 	} 
 	ofEmbeddingMap.close();
 	iTimeCal.EndWork("storing");
+	delete[] gatherResult;
+	
+	
+	/*
+	Parameters *CPUEmbeddingAddress = new Parameters[CACHE_SIZE];
+	std::ofstream cacheEmbedding;
+	em.MoveAllEmbeddings(CPUEmbeddingAddress);
+	cacheEmbedding.open("embedding_map/cachedembedding.csv");
+	for (int i = 0; i < CACHE_SIZE; i++) {
+		cacheEmbedding << CPUEmbeddingAddress[i].key << "," << CPUEmbeddingAddress[i].a[1] << "," << CPUEmbeddingAddress[i].v[1] << "\n";
+	} 
+	cacheEmbedding.close();
+	delete[] CPUEmbeddingAddress;
+	*/
 
 	em.DeleteEmbedding();
-	delete[] gatherResult;
+
 	return 0;
 }

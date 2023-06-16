@@ -5,17 +5,24 @@ __global__ void InitEmptyCache(Parameters *GPUEmbeddingAddress){
     GPUEmbeddingAddress[i].key = -1;
 }
 
-__global__ void HostInitEmbedding(Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length){
+__global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     if(i < length){
         int key = AllGPUEmbeddings[i].key;
-        int cache_id = key / CACHE_NUM * WAYS;
+        int cache_id = key % CACHE_NUM * WAYS;
+        bool blocked = true;
         for(int j = 0;j < WAYS;j++){
             if(GPUEmbeddingAddress[cache_id + j].key == -1){
-                GPUEmbeddingAddress[cache_id + j].key = i;
-                for(int k = 0; k < EMBEDDING_DIM; k++){
-                    GPUEmbeddingAddress[cache_id + j].a[k] = AllGPUEmbeddings[i].a[k];
-                    GPUEmbeddingAddress[cache_id + j].v[k] = AllGPUEmbeddings[i].v[k];
+                while(blocked) {
+                    if(0 == atomicCAS(&locks[key % CACHE_NUM], 0, 1)) {
+                        GPUEmbeddingAddress[cache_id + j].key = key;
+                        for(int k = 0; k < EMBEDDING_DIM; k++){
+                            GPUEmbeddingAddress[cache_id + j].a[k] = AllGPUEmbeddings[i].a[k];
+                            GPUEmbeddingAddress[cache_id + j].v[k] = AllGPUEmbeddings[i].v[k];
+                        }
+                        atomicExch(&locks[key % CACHE_NUM], 0);
+                        blocked = false;
+                    }
                 }
                 break;
             }
@@ -28,7 +35,7 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
     int j;
     if(i < currentBatchSize){
         int key = keyBatch[i];
-        int cache_id = key / CACHE_NUM * WAYS;
+        int cache_id = key % CACHE_NUM * WAYS;
         
         for(j = 0; j < WAYS; j++){
             if(GPUEmbeddingAddress[cache_id + j].key == key){
@@ -40,12 +47,7 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
                 break;
             }
         }
-        if(j == WAYS){
-            for(int k = 0; k < EMBEDDING_DIM; k++){
-                devicegatherResult[i].a[k] = -1;
-                devicegatherResult[i].v[k] = -1;
-            }
-        }
+
     }
 }
 
@@ -83,22 +85,22 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
     //初始化组相联Cache的key为-1
     cudaMalloc((void **)&GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters));
     InitEmptyCache<<<CACHE_SIZE / nDimBlock, nDimBlock>>>(GPUEmbeddingAddress);
-
+    
+    cudaMalloc((void**)&locks, CACHE_NUM * sizeof(int));
+    cudaMemset(locks, 0, CACHE_NUM * sizeof(int));
     int length = line.size();
 
     Parameters *AllGPUEmbeddings;
     cudaMalloc((void **)&AllGPUEmbeddings, length * sizeof(Parameters));
     cudaMemcpy(AllGPUEmbeddings, &line[0], length * sizeof(Parameters), cudaMemcpyHostToDevice);
 
-    HostInitEmbedding<<<length/nDimBlock + 1, nDimBlock>>>(GPUEmbeddingAddress, AllGPUEmbeddings, length);
+    DeviceInitEmbedding<<<length/nDimBlock + 1, nDimBlock>>>(locks, GPUEmbeddingAddress, AllGPUEmbeddings, length);
 
     ifDataSet.close();
 }
 
 
 void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize){ 
-
-
     //将Batch中的key拷贝到GPU
     int *keyBatch;
     cudaMalloc((void **)&keyBatch, currentBatchSize * sizeof(int));
@@ -130,6 +132,11 @@ void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherR
     GatherBatch(line, cursor, gatherResult, end - cursor);
 }
 
+void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){
+    cudaMemcpy(CPUEmbeddingAddress, GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters), cudaMemcpyDeviceToHost);
+}
+
 void CEmbeddingMap::DeleteEmbedding(){
+    delete []locks;
     cudaFree(GPUEmbeddingAddress);
 }

@@ -9,18 +9,19 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     if(i < length){
         int key = AllGPUEmbeddings[i].key;
-        int cache_id = key % CACHE_NUM * WAYS;
+        int cache_id = key % CACHE_NUM;
+        int possible_place = cache_id * WAYS;
         bool blocked = true;
         for(int j = 0;j < WAYS;j++){
-            if(GPUEmbeddingAddress[cache_id + j].key == -1){
+            if(GPUEmbeddingAddress[possible_place + j].key == -1){
                 while(blocked) {
-                    if(0 == atomicCAS(&locks[key % CACHE_NUM], 0, 1)) {
-                        GPUEmbeddingAddress[cache_id + j].key = key;
+                    if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
+                        GPUEmbeddingAddress[possible_place + j].key = key;
                         for(int k = 0; k < EMBEDDING_DIM; k++){
-                            GPUEmbeddingAddress[cache_id + j].a[k] = AllGPUEmbeddings[i].a[k];
-                            GPUEmbeddingAddress[cache_id + j].v[k] = AllGPUEmbeddings[i].v[k];
+                            GPUEmbeddingAddress[possible_place + j].a[k] = AllGPUEmbeddings[i].a[k];
+                            GPUEmbeddingAddress[possible_place + j].v[k] = AllGPUEmbeddings[i].v[k];
                         }
-                        atomicExch(&locks[key % CACHE_NUM], 0);
+                        atomicExch(&locks[cache_id], 0);
                         blocked = false;
                     }
                 }
@@ -137,6 +138,6 @@ void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){
 }
 
 void CEmbeddingMap::DeleteEmbedding(){
-    delete []locks;
+    cudaFree(locks);
     cudaFree(GPUEmbeddingAddress);
 }

@@ -51,7 +51,7 @@ int main() {
 	delete[] gatherResult;
 	
 	
-	/*
+	
 	Parameters *CPUEmbeddingAddress = new Parameters[CACHE_SIZE];
 	std::ofstream cacheEmbedding;
 	em.MoveAllEmbeddings(CPUEmbeddingAddress);
@@ -61,7 +61,7 @@ int main() {
 	} 
 	cacheEmbedding.close();
 	delete[] CPUEmbeddingAddress;
-	*/
+	
 
 	em.DeleteEmbedding();
 

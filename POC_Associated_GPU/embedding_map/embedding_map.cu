@@ -12,20 +12,20 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
         int cache_id = key % CACHE_NUM;
         int possible_place = cache_id * WAYS;
         bool blocked = true;
-        for(int j = 0;j < WAYS;j++){
-            if(GPUEmbeddingAddress[possible_place + j].key == -1){
-                while(blocked) {
-                    if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
+        while(blocked) {
+            if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
+                for(int j = 0;j < WAYS;j++){
+                    if(GPUEmbeddingAddress[possible_place + j].key == -1){
                         GPUEmbeddingAddress[possible_place + j].key = key;
                         for(int k = 0; k < EMBEDDING_DIM; k++){
                             GPUEmbeddingAddress[possible_place + j].a[k] = AllGPUEmbeddings[i].a[k];
                             GPUEmbeddingAddress[possible_place + j].v[k] = AllGPUEmbeddings[i].v[k];
                         }
-                        atomicExch(&locks[cache_id], 0);
-                        blocked = false;
+                        break;
                     }
                 }
-                break;
+                atomicExch(&locks[cache_id], 0);
+                blocked = false;
             }
         }
     }

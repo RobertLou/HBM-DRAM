@@ -1,5 +1,20 @@
 #include "embedding_map.h"
 
+Parameters* CEmbeddingMap::Get(int Key){
+	std::lock_guard<std::mutex> guard(a_mutex);
+	return a_map.at(Key);
+};
+
+void CEmbeddingMap::Set(int Key, Parameters* Value){
+	std::lock_guard<std::mutex> guard(a_mutex);
+	a_map.insert(std::make_pair(Key, Value)); 
+};
+
+void CEmbeddingMap::Erase(int key){
+	std::lock_guard<std::mutex> guard(a_mutex);
+	a_map.erase(key);
+}
+
 __global__ void InitEmptyCache(Parameters *GPUEmbeddingAddress){
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     GPUEmbeddingAddress[i].key = -1;
@@ -36,14 +51,15 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
     int j;
     if(i < currentBatchSize){
         int key = keyBatch[i];
-        int cache_id = key % CACHE_NUM * WAYS;
+        int cache_id = key % CACHE_NUM;
+        int possible_place = cache_id * WAYS;
         
         for(j = 0; j < WAYS; j++){
-            if(GPUEmbeddingAddress[cache_id + j].key == key){
+            if(GPUEmbeddingAddress[possible_place + j].key == key){
                 devicegatherResult[i].key = key;
                 for(int k = 0; k < EMBEDDING_DIM; k++){
-                    devicegatherResult[i].a[k] = GPUEmbeddingAddress[cache_id + j].a[k];
-                    devicegatherResult[i].v[k] = GPUEmbeddingAddress[cache_id + j].v[k];
+                    devicegatherResult[i].a[k] = GPUEmbeddingAddress[possible_place + j].a[k];
+                    devicegatherResult[i].v[k] = GPUEmbeddingAddress[possible_place + j].v[k];
                 }
                 break;
             }
@@ -52,7 +68,7 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
     }
 }
 
-void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters> &line,int bFirstLineDelete){
+void CEmbeddingMap::InitEmbedding(std::string strFileloc, int bFirstLineDelete){
     std::ifstream ifDataSet;
     ifDataSet.open(strFileloc);
 
@@ -80,20 +96,28 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters>
             tmp.v[i] = v_f;
             tmp.frequency = 0;
         }
-        line.emplace_back(tmp);
+        EmbeddingOnDRAM.emplace_back(tmp);
         vKey.emplace_back(nKeyTmp);
     }
+
+    //初始化CPU上的embedding map
+    auto iter2 = EmbeddingOnDRAM.begin();
+    for (auto iter1 = vKey.begin(); iter1 != vKey.end(); iter1++) {
+        Set(*iter1,&(*iter2));
+        iter2++;
+    }
+
     //初始化组相联Cache的key为-1
     cudaMalloc((void **)&GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters));
     InitEmptyCache<<<CACHE_SIZE / nDimBlock, nDimBlock>>>(GPUEmbeddingAddress);
     
     cudaMalloc((void**)&locks, CACHE_NUM * sizeof(int));
     cudaMemset(locks, 0, CACHE_NUM * sizeof(int));
-    int length = line.size();
+    int length = EmbeddingOnDRAM.size();
 
     Parameters *AllGPUEmbeddings;
     cudaMalloc((void **)&AllGPUEmbeddings, length * sizeof(Parameters));
-    cudaMemcpy(AllGPUEmbeddings, &line[0], length * sizeof(Parameters), cudaMemcpyHostToDevice);
+    cudaMemcpy(AllGPUEmbeddings, &EmbeddingOnDRAM[0], length * sizeof(Parameters), cudaMemcpyHostToDevice);
 
     DeviceInitEmbedding<<<length/nDimBlock + 1, nDimBlock>>>(locks, GPUEmbeddingAddress, AllGPUEmbeddings, length);
 

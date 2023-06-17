@@ -43,12 +43,17 @@ __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *dev
 
 class CEmbeddingMap{
 private:
-	Parameters *GPUEmbeddingAddress;
-	int *locks;
+	std::unordered_map<int, Parameters *> a_map; 	//EmbeddingMap on DRAM
+	std::mutex a_mutex;
+	std::vector<Parameters> EmbeddingOnDRAM;		//Embedding storing place on DRAM
+	Parameters *GPUEmbeddingAddress;				//Embedding storing place on GPU
+	int *locks;										
 
 public:
-
-	void InitEmbedding(std::string strFileloc, std::vector<Parameters> &line, int bFirstLineDelete);
+	Parameters* Get(int Key);
+	void Set(int Key, Parameters* Value);
+	void Erase(int key);
+	void InitEmbedding(std::string strFileloc, int bFirstLineDelete);
 
 
 	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);

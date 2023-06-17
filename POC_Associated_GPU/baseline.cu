@@ -23,8 +23,7 @@ int main() {
 	//从文件读取embedding向量，并建立hashmap
 	iTimeCal.StartWork("initialzing");
 	CEmbeddingMap em;
-	std::vector<Parameters> em_paras;
-	em.InitEmbedding("embedding_map/embedding.csv",em_paras,1);
+	em.InitEmbedding("embedding_map/embedding.csv", 1);
 	iTimeCal.EndWork("initialzing");
 	
 	/*
@@ -51,7 +50,7 @@ int main() {
 	delete[] gatherResult;
 	
 	
-	
+	/*
 	Parameters *CPUEmbeddingAddress = new Parameters[CACHE_SIZE];
 	std::ofstream cacheEmbedding;
 	em.MoveAllEmbeddings(CPUEmbeddingAddress);
@@ -61,7 +60,7 @@ int main() {
 	} 
 	cacheEmbedding.close();
 	delete[] CPUEmbeddingAddress;
-	
+	*/
 
 	em.DeleteEmbedding();
 

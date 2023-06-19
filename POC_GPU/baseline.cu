@@ -8,16 +8,30 @@
 #include "../time/timecalculate.h"
 #include "../FileRW/csvRW.h"
 
+#define DataSize 26557961
+
 int main() {
 	std::ofstream ofEmbeddingMap;
 	CTimeCalculate iTimeCal;
 
 	std::vector<int> line;
 
-	//将所需数据存到vLines向量中
+/* 	//将所需数据存到lines向量中
 	iTimeCal.StartWork("reading");
 	std::string dataloc =  "../dataset/ad_feature.csv";
 	readcsv(dataloc,line,1,1);
+	iTimeCal.EndWork("reading"); */
+
+	//换取另一个数据集
+	std::ifstream ifs;
+	iTimeCal.StartWork("reading");
+	ifs.open("../dataset/adgroup_id.txt");
+	int temp;
+	for(int i = 0; i < DataSize; i++){
+		ifs >> temp;
+		line.push_back(temp);
+	}
+	ifs.close();
 	iTimeCal.EndWork("reading");
 
 	//从文件读取embedding向量，并建立hashmap
@@ -26,6 +40,7 @@ int main() {
 	std::vector<Parameters> em_paras;
 	em.InitEmbedding("embedding_map/embedding.csv",em_paras,1);
 	iTimeCal.EndWork("initialzing");
+
 	
 	/*
 	//更新embedding表

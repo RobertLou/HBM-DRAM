@@ -39,7 +39,7 @@ struct TimeInterval{
 
 __global__ void InitEmptyCache(Parameters *GPUEmbeddingAddress);
 __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length);
-__global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize);
+__global__ void GatherEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, int devMissCount, int currentBatchSize);
 
 class CEmbeddingMap{
 private:

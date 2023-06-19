@@ -2,6 +2,7 @@
 *.out
 *.exe
 *.o
+*.txt
 .DS_Store
 test
 POC_CPU/POC_CPU

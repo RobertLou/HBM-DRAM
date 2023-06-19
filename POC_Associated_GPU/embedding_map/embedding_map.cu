@@ -36,6 +36,7 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
                             GPUEmbeddingAddress[possible_place + j].a[k] = AllGPUEmbeddings[i].a[k];
                             GPUEmbeddingAddress[possible_place + j].v[k] = AllGPUEmbeddings[i].v[k];
                         }
+                        GPUEmbeddingAddress[possible_place + j].frequency = 0;
                         break;
                     }
                 }
@@ -46,25 +47,98 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
     }
 }
 
-__global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *devicegatherResult, int currentBatchSize){
+__global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, int *devMissCount, int currentBatchSize){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j;
     if(i < currentBatchSize){
         int key = keyBatch[i];
         int cache_id = key % CACHE_NUM;
         int possible_place = cache_id * WAYS;
-        
+        deviceGatherStatus[i] = 0;
         for(j = 0; j < WAYS; j++){
             if(GPUEmbeddingAddress[possible_place + j].key == key){
-                devicegatherResult[i].key = key;
+                deviceGatherResult[i].key = key;
+                deviceGatherStatus[i] = j + 1;
                 for(int k = 0; k < EMBEDDING_DIM; k++){
-                    devicegatherResult[i].a[k] = GPUEmbeddingAddress[possible_place + j].a[k];
-                    devicegatherResult[i].v[k] = GPUEmbeddingAddress[possible_place + j].v[k];
+                    deviceGatherResult[i].a[k] = GPUEmbeddingAddress[possible_place + j].a[k];
+                    deviceGatherResult[i].v[k] = GPUEmbeddingAddress[possible_place + j].v[k];
                 }
+                atomicAdd(&GPUEmbeddingAddress[possible_place + j].frequency, 1);
+                break;
+            }
+            
+            if(-1 == atomicCAS(&GPUEmbeddingAddress[possible_place + j].key, -1, key)){
+                atomicAdd(devMissCount, 1);
+                deviceGatherStatus[i] = -j - 1;
                 break;
             }
         }
+        if(j == WAYS){
+            atomicAdd(devMissCount, 1);
+        }
+    }
+}
 
+__global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, Parameters *deviceMissingEmbedding, int currentBatchSize){
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if(i < currentBatchSize){
+        int key = keyBatch[i];
+        int cache_id = key % CACHE_NUM;
+        int possible_place = cache_id * WAYS;
+        if(deviceGatherStatus[i] < 0){
+            //写入Result
+            deviceGatherResult[i].key =  key;
+            for(int k = 0; k < EMBEDDING_DIM; k++){
+                deviceGatherResult[i].a[k] = deviceMissingEmbedding[i].a[k];
+                deviceGatherResult[i].v[k] = deviceMissingEmbedding[i].v[k];
+            }
+            deviceGatherResult[i].frequency = 0;
+
+            //更新Cache
+            int offset = - deviceGatherStatus[i] - 1;
+            GPUEmbeddingAddress[possible_place + offset].key = key;
+            for(int k = 0; k < EMBEDDING_DIM; k++){
+                GPUEmbeddingAddress[possible_place + offset].a[k] = deviceMissingEmbedding[i].a[k];
+                GPUEmbeddingAddress[possible_place + offset].v[k] = deviceMissingEmbedding[i].v[k];
+            }
+            GPUEmbeddingAddress[possible_place + offset].frequency = 0;
+        }
+        else if(deviceGatherStatus[i] == 0){
+            //写入Result
+            deviceGatherResult[i].key =  key;
+            for(int k = 0; k < EMBEDDING_DIM; k++){
+                deviceGatherResult[i].a[k] = deviceMissingEmbedding[i].a[k];
+                deviceGatherResult[i].v[k] = deviceMissingEmbedding[i].v[k];
+            }
+            deviceGatherResult[i].frequency = 0;
+
+            //更新Cache
+            bool blocked = true;
+            int minFreq = 99999;
+            int minPlace = -1;
+            while(blocked) {
+                if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
+                    //寻找可替换位置
+                    for(int j = 0;j < WAYS;j++){
+                        if(GPUEmbeddingAddress[possible_place + j].frequency < minFreq){
+                            minFreq = GPUEmbeddingAddress[possible_place + j].frequency;
+                            minPlace = j;
+                        }
+                    }
+
+                    //替换
+                    GPUEmbeddingAddress[possible_place + minPlace].key = key;
+                    for(int k = 0; k < EMBEDDING_DIM; k++){
+                        GPUEmbeddingAddress[possible_place + minPlace].a[k] = deviceMissingEmbedding[i].a[k];
+                        GPUEmbeddingAddress[possible_place + minPlace].v[k] = deviceMissingEmbedding[i].v[k];
+                    }
+                    GPUEmbeddingAddress[possible_place + minPlace].frequency = 0;
+
+                    atomicExch(&locks[cache_id], 0);
+                    blocked = false;
+                }
+            }
+        }
     }
 }
 
@@ -132,17 +206,77 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     cudaMemcpy(keyBatch, &line[cursor], currentBatchSize * sizeof(int), cudaMemcpyHostToDevice);
 
     //创建查找到的embedding数据存储的空间
-    Parameters *devicegatherResult;
-    cudaMalloc((void **)&devicegatherResult, currentBatchSize * sizeof(Parameters));
+    Parameters *deviceGatherResult;
+    cudaMalloc((void **)&deviceGatherResult, currentBatchSize * sizeof(Parameters));
+
+    //创建Status的空间
+    int *deviceGatherStatus,*gatherStatus;
+    cudaMalloc((void **)&deviceGatherStatus, currentBatchSize * sizeof(int));
+    gatherStatus = new int[currentBatchSize]();
+
+    int missCount = 0, *devMissCount;
+    cudaMalloc((void **)&devMissCount, sizeof(int));
 
     //Gather 
-    GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, devicegatherResult, currentBatchSize);
+    GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, devMissCount, currentBatchSize);
     cudaDeviceSynchronize();
 
+    //如果有缺少的，从CPU上拉取
+    cudaMemcpy(gatherStatus, deviceGatherStatus, currentBatchSize * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&missCount, devMissCount, sizeof(int), cudaMemcpyDeviceToHost);
+    if(missCount > 0){
+        Parameters *missingEmbedding, *deviceMissingEmbedding;
+        cudaMalloc(&deviceMissingEmbedding, currentBatchSize * sizeof(Parameters));
+        missingEmbedding = new Parameters[currentBatchSize];        
+
+        //从CPU中查找缺失的Embedding
+        //TODO::修改为多线程查找
+        for(int i = 0; i < currentBatchSize; i++){
+            if(gatherStatus[i] <= 0){
+                Parameters *tmp;
+                tmp = Get(line[cursor + i]);
+                missingEmbedding[i].key = tmp->key;
+                for(int j = 0;j < EMBEDDING_DIM; j++){
+                    missingEmbedding[i].a[j] = tmp->a[j];
+                    missingEmbedding[i].v[j] = tmp->v[j];
+                }
+                missingEmbedding[i].frequency = tmp->frequency;
+            }
+        }
+
+        //将查询结果拷上GPU
+        cudaMemcpy(deviceMissingEmbedding, missingEmbedding, currentBatchSize * sizeof(Parameters), cudaMemcpyHostToDevice);
+        GatherMissingEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(locks, keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, deviceMissingEmbedding, currentBatchSize);
+
+
+        delete []missingEmbedding;
+        cudaFree(deviceMissingEmbedding);
+    }
+
     //将结果拷贝回CPU检验
-    cudaMemcpy(&gatherResult[cursor], devicegatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&gatherResult[cursor], deviceGatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
+
     
-    cudaFree(devicegatherResult);
+    int replaceCount = 0, missCount2 = 0, hitCount = 0;
+    for(int i = 0; i < currentBatchSize;i++){
+        if(gatherStatus[i] == 0){
+            replaceCount++;
+        }
+        else if(gatherStatus[i] < 0){
+            missCount2++;
+        }
+        else if(gatherStatus[i] > 0){
+            hitCount++;
+        }
+    }
+    //std::cout << missCount << std::endl;
+    //std::cout << hitCount << "," << replaceCount << "," << missCount2 << std::endl;
+
+
+
+    delete []gatherStatus;
+    cudaFree(deviceGatherStatus);
+    cudaFree(deviceGatherResult);
     cudaFree(keyBatch);
 }
 

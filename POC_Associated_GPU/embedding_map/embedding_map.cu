@@ -50,6 +50,9 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
 __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, int *devMissCount, int currentBatchSize){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j;
+    if (i == 0){
+        *devMissCount = 0;
+    }
     if(i < currentBatchSize){
         int key = keyBatch[i];
         int cache_id = key % CACHE_NUM;
@@ -229,12 +232,15 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     //如果有缺少的，从CPU上拉取
     cudaMemcpy(gatherStatus, deviceGatherStatus, currentBatchSize * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&missCount, devMissCount, sizeof(int), cudaMemcpyDeviceToHost);
-    totalBatch++;
+    totalBatch++;  
     if(missCount > 0){
         missingBatch++;
         Parameters *missingEmbedding, *deviceMissingEmbedding;
         cudaMalloc(&deviceMissingEmbedding, currentBatchSize * sizeof(Parameters));
-        missingEmbedding = new Parameters[currentBatchSize];        
+        missingEmbedding = new Parameters[currentBatchSize];
+        std::cout << missCount << std::endl;  
+        std::cout << currentBatchSize << std::endl;
+        std::cout << totalBatch << std::endl;
 
         //从CPU中查找缺失的Embedding
         //TODO::修改为多线程查找
@@ -284,6 +290,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
 
     delete []gatherStatus;
+    cudaFree(devMissCount);
     cudaFree(deviceGatherStatus);
     cudaFree(deviceGatherResult);
     cudaFree(keyBatch);

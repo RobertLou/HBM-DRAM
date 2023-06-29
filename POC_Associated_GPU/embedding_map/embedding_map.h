@@ -16,7 +16,8 @@
 #define THREAD_NUM 4
 #define EMBEDDING_DIM 128
 #define BATCH_SIZE 256 * 16
-#define CACHE_SIZE 262144
+//#define CACHE_SIZE 262144
+#define CACHE_SIZE 1048576
 #define WAYS 8
 #define CACHE_NUM (CACHE_SIZE / WAYS)
 

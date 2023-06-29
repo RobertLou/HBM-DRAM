@@ -54,7 +54,10 @@ int main() {
 	em.GatherWork(line, gatherResult);
 	iTimeCal.EndWork("Gathering");
 
-	iTimeCal.StartWork("storing");
+	std::cout << "Hit Rate:" << em.GetHitRate() << std::endl;
+	std::cout << "Missing Batch Rate:" << em.GetMissingBatchRate() << std::endl;
+
+/* 	iTimeCal.StartWork("storing");
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	ofEmbeddingMap << "key,a,v\n";
 	for (int i = 0; i < totalLength; i++) {
@@ -62,8 +65,8 @@ int main() {
 	} 
 	ofEmbeddingMap.close();
 	iTimeCal.EndWork("storing");
-	delete[] gatherResult;
-	
+	delete[] gatherResult; */
+
 	Parameters *CPUEmbeddingAddress = new Parameters[CACHE_SIZE];
 	std::ofstream cacheEmbedding;
 	em.MoveAllEmbeddings(CPUEmbeddingAddress);

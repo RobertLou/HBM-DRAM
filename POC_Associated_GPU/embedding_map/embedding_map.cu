@@ -174,6 +174,11 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc, int bFirstLineDelete){
         vKey.emplace_back(nKeyTmp);
     }
 
+    totalMissCount = 0;
+    totalHitCount = 0;
+    totalBatch = 0;
+    missingBatch = 0;
+
     //初始化CPU上的embedding map
     auto iter2 = EmbeddingOnDRAM.begin();
     for (auto iter1 = vKey.begin(); iter1 != vKey.end(); iter1++) {
@@ -224,7 +229,9 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     //如果有缺少的，从CPU上拉取
     cudaMemcpy(gatherStatus, deviceGatherStatus, currentBatchSize * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&missCount, devMissCount, sizeof(int), cudaMemcpyDeviceToHost);
+    totalBatch++;
     if(missCount > 0){
+        missingBatch++;
         Parameters *missingEmbedding, *deviceMissingEmbedding;
         cudaMalloc(&deviceMissingEmbedding, currentBatchSize * sizeof(Parameters));
         missingEmbedding = new Parameters[currentBatchSize];        
@@ -269,6 +276,8 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
             hitCount++;
         }
     }
+    totalHitCount += hitCount;
+    totalMissCount += missCount;
     //std::cout << missCount << std::endl;
     //std::cout << hitCount << "," << replaceCount << "," << missCount2 << std::endl;
 
@@ -289,6 +298,14 @@ void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherR
         cursor += BATCH_SIZE;
     }
     GatherBatch(line, cursor, gatherResult, end - cursor);
+}
+
+float CEmbeddingMap::GetHitRate(){
+    return totalHitCount / (totalHitCount + totalMissCount);
+}
+
+float CEmbeddingMap::GetMissingBatchRate(){
+    return missingBatch / totalBatch;
 }
 
 void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){

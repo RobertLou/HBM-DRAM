@@ -47,7 +47,8 @@ private:
 	std::mutex a_mutex;
 	std::vector<Parameters> EmbeddingOnDRAM;		//Embedding storing place on DRAM
 	Parameters *GPUEmbeddingAddress;				//Embedding storing place on GPU
-	int *locks;										
+	int *locks;			
+	float totalMissCount, totalHitCount, totalBatch, missingBatch;							
 
 public:
 	Parameters* Get(int Key);
@@ -58,6 +59,9 @@ public:
 
 	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);
 	void GatherWork(const std::vector<int>& line, Parameters *gatherResult);
+	
+	float GetHitRate();
+	float GetMissingBatchRate();
 	
 	//Move all embeddings from GPU cache to memory 
 	void MoveAllEmbeddings(Parameters *CPUEmbeddingAddress);

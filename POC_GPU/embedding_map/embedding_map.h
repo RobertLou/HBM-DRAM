@@ -29,7 +29,7 @@ struct Parameters{
 
 struct TimeInterval{
 	timespec tMemStart, tMemEnd;
-	float fMemcpyTime1 = 0,fMemcpyTime2 = 0;
+	float fMemcpyTime1 = 0,fMemcpyTime2 = 0, gatherTime = 0;
 };//ti用于记录每个线程中的各项任务的时间
 
 
@@ -54,7 +54,7 @@ public:
 	void UpdateWork(const std::vector<int>& line, int start, int end, int workerId);
 	void MultiThreadUpdateEV(const std::vector<int>& line);
 
-	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize);
+	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize, TimeInterval &ti);
 	void GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int worker_id);
 	void MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult);
 

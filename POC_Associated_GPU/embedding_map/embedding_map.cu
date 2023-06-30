@@ -213,6 +213,8 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     cudaMalloc((void **)&keyBatch, currentBatchSize * sizeof(int));
     cudaMemcpy(keyBatch, &line[cursor], currentBatchSize * sizeof(int), cudaMemcpyHostToDevice);
 
+    clock_gettime(CLOCK_MONOTONIC, &tStart);
+
     //创建查找到的embedding数据存储的空间
     Parameters *deviceGatherResult;
     cudaMalloc((void **)&deviceGatherResult, currentBatchSize * sizeof(Parameters));
@@ -266,6 +268,8 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
         cudaFree(deviceMissingEmbedding);
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &tEnd);
+    gatherTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
     //将结果拷贝回CPU检验
     cudaMemcpy(&gatherResult[cursor], deviceGatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
 
@@ -299,6 +303,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult){
     int cursor = 0;
     int end = line.size();
+    gatherTime = 0;
 
     while(end - cursor >= BATCH_SIZE){
         GatherBatch(line, cursor, gatherResult, BATCH_SIZE);
@@ -315,6 +320,10 @@ float CEmbeddingMap::GetMissingBatchRate(){
     return missingBatch / totalBatch;
 }
 
+float CEmbeddingMap::GetGatherTime(){
+    return gatherTime;
+}
+
 void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){
     cudaMemcpy(CPUEmbeddingAddress, GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters), cudaMemcpyDeviceToHost);
 }
@@ -323,3 +332,4 @@ void CEmbeddingMap::DeleteEmbedding(){
     cudaFree(locks);
     cudaFree(GPUEmbeddingAddress);
 }
+

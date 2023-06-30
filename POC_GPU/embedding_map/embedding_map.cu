@@ -136,21 +136,25 @@ void CEmbeddingMap::MultiThreadUpdateEV(const std::vector<int>& line) {
     }
 }
 
-void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize){ 
+void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize, TimeInterval &ti){ 
     int nBatchCursor = 0;
     Parameters **addressBatch= new Parameters*[BATCH_SIZE];
-
+    
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     //查询key所对应的GPU地址
     for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
         addressBatch[nBatchCursor] = Get(*iter);
         nBatchCursor++;
     }
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
+    ti.gatherTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
 
     //将embedding所对应的GPU地址拷贝到GPU
     Parameters **deviceAddressBatch;
     cudaMalloc((void **)&deviceAddressBatch, currentBatchSize * sizeof(Parameters *));
     cudaMemcpy(deviceAddressBatch, addressBatch, currentBatchSize * sizeof(Parameters *), cudaMemcpyHostToDevice);
 
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     //创建查找到的embedding数据存储的空间
     Parameters *devicegatherResult;
     cudaMalloc((void **)&devicegatherResult, currentBatchSize * sizeof(Parameters));
@@ -158,6 +162,8 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     //Gather 
     GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
     cudaDeviceSynchronize();
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
+    ti.gatherTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
 
     //将结果拷贝回CPU检验
     cudaMemcpy(&gatherResult[cursor], devicegatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
@@ -168,12 +174,14 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
 void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId){
     int cursor = start;
-
+    TimeInterval ti;
+    ti.gatherTime = 0;
     while(end - cursor >= BATCH_SIZE){
-        GatherBatch(line, cursor, gatherResult, BATCH_SIZE);
+        GatherBatch(line, cursor, gatherResult, BATCH_SIZE, ti);
         cursor += BATCH_SIZE;
     }
-    GatherBatch(line, cursor, gatherResult, end - cursor);
+    GatherBatch(line, cursor, gatherResult, end - cursor, ti);
+    std::cout << ti.gatherTime << "ms" << std::endl;
 }
 
 void CEmbeddingMap::MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult) {

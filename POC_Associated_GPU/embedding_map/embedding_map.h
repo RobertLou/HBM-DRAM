@@ -15,7 +15,7 @@
 
 #define THREAD_NUM 4
 #define EMBEDDING_DIM 128
-#define BATCH_SIZE 256 * 16
+#define BATCH_SIZE (256 * 16)
 //#define CACHE_SIZE 262144
 #define CACHE_SIZE 1048576
 #define WAYS 8
@@ -49,8 +49,9 @@ private:
 	std::vector<Parameters> EmbeddingOnDRAM;		//Embedding storing place on DRAM
 	Parameters *GPUEmbeddingAddress;				//Embedding storing place on GPU
 	int *locks;			
-	float totalMissCount, totalHitCount, totalBatch, missingBatch;							
-
+	float totalMissCount, totalHitCount, totalBatch, missingBatch;		
+	timespec tStart, tEnd;					
+	float gatherTime;
 public:
 	Parameters* Get(int Key);
 	void Set(int Key, Parameters* Value);
@@ -63,6 +64,7 @@ public:
 	
 	float GetHitRate();
 	float GetMissingBatchRate();
+	float GetGatherTime();
 	
 	//Move all embeddings from GPU cache to memory 
 	void MoveAllEmbeddings(Parameters *CPUEmbeddingAddress);

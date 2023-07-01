@@ -1,17 +1,17 @@
 #include "embedding_map.h"
 
 Parameters* CEmbeddingMap::Get(int Key){
-	std::lock_guard<std::mutex> guard(a_mutex);
+    std::shared_lock<std::shared_mutex> lock(a_mutex);
 	return a_map.at(Key);
 };
 
 void CEmbeddingMap::Set(int Key, Parameters* Value){
-	std::lock_guard<std::mutex> guard(a_mutex);
+    std::unique_lock<std::shared_mutex> lock(a_mutex);
 	a_map.insert(std::make_pair(Key, Value)); 
 };
 
 void CEmbeddingMap::Erase(int key){
-	std::lock_guard<std::mutex> guard(a_mutex);
+	std::unique_lock<std::shared_mutex> lock(a_mutex);
 	a_map.erase(key);
 }
 
@@ -137,40 +137,57 @@ void CEmbeddingMap::MultiThreadUpdateEV(const std::vector<int>& line) {
     }
 }
 
-void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize){ 
+void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parameters *gatherResult, int currentBatchSize, TimeInterval &ti){ 
     Parameters* tmp;
     int nBatchCursor = 0;
 
     //memcpy,将查询到的数据复制到连续的batch空间中
     for (auto iter = line.cbegin() + cursor; iter != line.cbegin() + cursor + currentBatchSize; iter++) {
+        clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
         tmp = Get(*iter);
+        clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
+        ti.gatherLookupTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
+
+        clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
         for(int i = 0;i < EMBEDDING_DIM;++i){
             gatherResult[cursor + nBatchCursor].a[i] = tmp->a[i];
             gatherResult[cursor + nBatchCursor].v[i] = tmp->v[i];
         }
         nBatchCursor++;
+        clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
+        ti.gatherMemcpyTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
     }
 }
 
-void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId){
+void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId, TimeInterval &ti){
     int cursor = start;
-
+    ti.gatherLookupTime = 0;
+    ti.gatherMemcpyTime = 0;
     while(end - cursor >= BATCH_SIZE){
-        GatherBatch(line, cursor, gatherResult, BATCH_SIZE);
+        GatherBatch(line, cursor, gatherResult, BATCH_SIZE, ti);
         cursor += BATCH_SIZE;
     }
-    GatherBatch(line, cursor, gatherResult, end - cursor);
+    GatherBatch(line, cursor, gatherResult, end - cursor, ti);
 }
 
 void CEmbeddingMap::MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult) {
     int scope = line.size() / THREAD_NUM;
     std::thread th_arr[THREAD_NUM];
-
+    TimeInterval ti[THREAD_NUM];
     for (unsigned int i = 0; i < THREAD_NUM - 1; ++i) {
-        th_arr[i] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, i * scope, (i + 1) * scope, i);
+        th_arr[i] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, i * scope, (i + 1) * scope, i, std::ref(ti[i]));
     }
-    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1);
+    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1, std::ref(ti[THREAD_NUM - 1]));
     for (unsigned int i = 0; i < THREAD_NUM; ++i) {
         th_arr[i].join();
     }
+
+    float averageLookupTime = 0,averageMemcpyTime = 0;
+    for (unsigned int i = 0; i < THREAD_NUM; ++i) {
+        averageLookupTime += ti[i].gatherLookupTime;
+        averageMemcpyTime += ti[i].gatherMemcpyTime;
+    }
+
+    std::cout << "LookupTime:" << averageLookupTime / THREAD_NUM << "ms" << std::endl;
+    std::cout << "MemcpyTime:" << averageMemcpyTime / THREAD_NUM << "ms" << std::endl;
 }

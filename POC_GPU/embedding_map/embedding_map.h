@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <sstream>
 #include <math.h>
@@ -13,7 +14,7 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define THREAD_NUM 4
+#define THREAD_NUM 16
 #define EMBEDDING_DIM 128
 #define BATCH_SIZE 256 * 16
 
@@ -30,6 +31,7 @@ struct Parameters{
 struct TimeInterval{
 	timespec tMemStart, tMemEnd;
 	float fMemcpyTime1 = 0,fMemcpyTime2 = 0, gatherTime = 0;
+	float gatherLookupTime, gatherH2DMemcpyTime, gatherD2DMemcpyTime;
 };//ti用于记录每个线程中的各项任务的时间
 
 
@@ -38,7 +40,7 @@ __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *dev
 
 class CEmbeddingMap{
 private:
-	std::mutex a_mutex;
+	std::shared_mutex a_mutex;
 	Parameters *GPUEmbeddingAddress;
 
 public:
@@ -55,7 +57,7 @@ public:
 	void MultiThreadUpdateEV(const std::vector<int>& line);
 
 	void GatherBatch(const std::vector<int>& line, int cursor, Parameters *batch, int currentBatchSize, TimeInterval &ti);
-	void GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int worker_id);
+	void GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int worker_id, TimeInterval &ti);
 	void MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult);
 
 	void DeleteEmbedding();

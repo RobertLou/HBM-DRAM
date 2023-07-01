@@ -21,20 +21,19 @@ __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *dev
     }
 }
 
-Parameters* CEmbeddingMap::Get(int Key) {
-    std::lock_guard<std::mutex> guard(a_mutex);
-    return a_map.at(Key);
+Parameters* CEmbeddingMap::Get(int Key){
+    std::shared_lock<std::shared_mutex> lock(a_mutex);
+	return a_map.at(Key);
 };
 
-void CEmbeddingMap::Set(int Key, Parameters* Value) {
-    std::lock_guard<std::mutex> guard(a_mutex);
-    a_map.insert(std::make_pair(Key, Value)); 
+void CEmbeddingMap::Set(int Key, Parameters* Value){
+    std::unique_lock<std::shared_mutex> lock(a_mutex);
+	a_map.insert(std::make_pair(Key, Value)); 
 };
 
-void CEmbeddingMap::Erase(int Key)
-{
-    std::lock_guard<std::mutex> guard(a_mutex);
-    a_map.erase(Key);
+void CEmbeddingMap::Erase(int key){
+	std::unique_lock<std::shared_mutex> lock(a_mutex);
+	a_map.erase(key);
 }
 
 void CEmbeddingMap::InitEmbedding(std::string strFileloc,std::vector<Parameters> &line,int bFirstLineDelete){
@@ -147,23 +146,28 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
         nBatchCursor++;
     }
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
-    ti.gatherTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
+    ti.gatherLookupTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
 
     //将embedding所对应的GPU地址拷贝到GPU
     Parameters **deviceAddressBatch;
     cudaMalloc((void **)&deviceAddressBatch, currentBatchSize * sizeof(Parameters *));
-    cudaMemcpy(deviceAddressBatch, addressBatch, currentBatchSize * sizeof(Parameters *), cudaMemcpyHostToDevice);
 
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
+    cudaMemcpy(deviceAddressBatch, addressBatch, currentBatchSize * sizeof(Parameters *), cudaMemcpyHostToDevice);
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
+    ti.gatherH2DMemcpyTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
+
+    
     //创建查找到的embedding数据存储的空间
     Parameters *devicegatherResult;
     cudaMalloc((void **)&devicegatherResult, currentBatchSize * sizeof(Parameters));
 
+    clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     //Gather 
     GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
     cudaDeviceSynchronize();
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
-    ti.gatherTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
+    ti.gatherD2DMemcpyTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;
 
     //将结果拷贝回CPU检验
     cudaMemcpy(&gatherResult[cursor], devicegatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
@@ -172,29 +176,41 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     delete []addressBatch;
 }
 
-void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId){
+void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult, int start, int end, int workerId, TimeInterval &ti){
     int cursor = start;
-    TimeInterval ti;
     ti.gatherTime = 0;
+    ti.gatherLookupTime = 0;
+    ti.gatherH2DMemcpyTime = 0;
+    ti.gatherD2DMemcpyTime = 0;
     while(end - cursor >= BATCH_SIZE){
         GatherBatch(line, cursor, gatherResult, BATCH_SIZE, ti);
         cursor += BATCH_SIZE;
     }
     GatherBatch(line, cursor, gatherResult, end - cursor, ti);
-    std::cout << ti.gatherTime << "ms" << std::endl;
 }
 
 void CEmbeddingMap::MultiThreadGatherEV(const std::vector<int>& line, Parameters *gatherResult) {
     int scope = line.size() / THREAD_NUM;
     std::thread th_arr[THREAD_NUM];
-
+    TimeInterval ti[THREAD_NUM];
     for (unsigned int i = 0; i < THREAD_NUM - 1; ++i) {
-        th_arr[i] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, i * scope, (i + 1) * scope, i);
+        th_arr[i] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, i * scope, (i + 1) * scope, i, std::ref(ti[i]));
     }
-    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1);
+    th_arr[THREAD_NUM - 1] = std::thread(&CEmbeddingMap::GatherWork, this, std::ref(line), gatherResult, (THREAD_NUM - 1) * scope, line.size(), THREAD_NUM - 1, std::ref(ti[THREAD_NUM - 1]));
     for (unsigned int i = 0; i < THREAD_NUM; ++i) {
         th_arr[i].join();
     }
+
+    float averageLookupTime = 0, averageH2DMemcpyTime = 0, averageD2DMemcpyTime = 0;
+    for (unsigned int i = 0; i < THREAD_NUM; ++i) {
+        averageLookupTime += ti[i].gatherLookupTime;
+        averageH2DMemcpyTime += ti[i].gatherH2DMemcpyTime;
+        averageD2DMemcpyTime += ti[i].gatherD2DMemcpyTime;
+    }
+
+    std::cout << "LookupTime:" << averageLookupTime / THREAD_NUM << "ms" << std::endl;
+    std::cout << "MemcpyH2DTime:" << averageH2DMemcpyTime / THREAD_NUM << "ms" << std::endl;
+    std::cout << "MemcpyD2DTime:" << averageD2DMemcpyTime / THREAD_NUM << "ms" << std::endl;
 }
 
 void CEmbeddingMap::DeleteEmbedding(){

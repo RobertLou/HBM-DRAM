@@ -56,7 +56,10 @@ int main() {
 
 	std::cout << "Hit Rate:" << em.GetHitRate() << std::endl;
 	std::cout << "Missing Batch Rate:" << em.GetMissingBatchRate() << std::endl;
-	std::cout << "Gather Time:" << em.GetGatherTime() << "ms" << std::endl;
+	std::cout << "Hit Time:" << em.GetHitTime() << "ms" << std::endl;
+	std::cout << "Status Memcpy Time:" << em.GetStatusMemcpyTime() << "ms" << std::endl;
+	std::cout << "LookUp Time:" << em.GetLookUpTime() << "ms" << std::endl;
+	std::cout << "Memcpy Time:" << em.GetMemcpyTime() << "ms" << std::endl;
 
 /* 	iTimeCal.StartWork("storing");
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");

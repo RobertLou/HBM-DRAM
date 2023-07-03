@@ -1,4 +1,4 @@
-CC=nvcc
+CC=nvcc -std=c++17
 CFLAGS=-I.
 DEPS = embedding_map/embedding_map.h ../time/timecalculate.h ../FileRW/csvRW.h
 OBJ = baseline.o embedding_map/embedding_map.o
@@ -10,7 +10,7 @@ embedding_map/embedding_map.o: embedding_map/embedding_map.cu embedding_map/embe
 	$(CC) -c -o embedding_map/embedding_map.o embedding_map/embedding_map.cu
 
 baseline.o:baseline.cu $(DEPS) embedding_map/embedding_map.cu
-	nvcc -c -o baseline.o baseline.cu
+	$(CC) -c -o baseline.o baseline.cu
 
 
 

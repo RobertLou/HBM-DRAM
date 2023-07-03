@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <sstream>
 #include <math.h>
@@ -17,7 +18,7 @@
 #define EMBEDDING_DIM 128
 #define BATCH_SIZE (256 * 16)
 //#define CACHE_SIZE 262144
-#define CACHE_SIZE 1048576
+#define CACHE_SIZE 524288
 #define WAYS 8
 #define CACHE_NUM (CACHE_SIZE / WAYS)
 
@@ -45,13 +46,13 @@ __global__ void GatherEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbedd
 class CEmbeddingMap{
 private:
 	std::unordered_map<int, Parameters *> a_map; 	//EmbeddingMap on DRAM
-	std::mutex a_mutex;
+	std::shared_mutex a_mutex;
 	std::vector<Parameters> EmbeddingOnDRAM;		//Embedding storing place on DRAM
 	Parameters *GPUEmbeddingAddress;				//Embedding storing place on GPU
 	int *locks;			
 	float totalMissCount, totalHitCount, totalBatch, missingBatch;		
 	timespec tStart, tEnd;					
-	float gatherTime;
+	float hitTime, statusMemcpyTime, lookUpTime, memcpyTime;
 public:
 	Parameters* Get(int Key);
 	void Set(int Key, Parameters* Value);
@@ -64,7 +65,10 @@ public:
 	
 	float GetHitRate();
 	float GetMissingBatchRate();
-	float GetGatherTime();
+	float GetHitTime();
+	float GetStatusMemcpyTime();
+	float GetLookUpTime();
+	float GetMemcpyTime();
 	
 	//Move all embeddings from GPU cache to memory 
 	void MoveAllEmbeddings(Parameters *CPUEmbeddingAddress);

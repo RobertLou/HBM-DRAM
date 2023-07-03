@@ -1,17 +1,17 @@
 #include "embedding_map.h"
 
 Parameters* CEmbeddingMap::Get(int Key){
-	std::lock_guard<std::mutex> guard(a_mutex);
+    std::shared_lock<std::shared_mutex> lock(a_mutex);
 	return a_map.at(Key);
 };
 
 void CEmbeddingMap::Set(int Key, Parameters* Value){
-	std::lock_guard<std::mutex> guard(a_mutex);
+    std::unique_lock<std::shared_mutex> lock(a_mutex);
 	a_map.insert(std::make_pair(Key, Value)); 
 };
 
 void CEmbeddingMap::Erase(int key){
-	std::lock_guard<std::mutex> guard(a_mutex);
+	std::unique_lock<std::shared_mutex> lock(a_mutex);
 	a_map.erase(key);
 }
 
@@ -231,21 +231,27 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, devMissCount, currentBatchSize);
     cudaDeviceSynchronize();
 
+    clock_gettime(CLOCK_MONOTONIC, &tEnd);
+    hitTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
+
     //如果有缺少的，从CPU上拉取
+    clock_gettime(CLOCK_MONOTONIC, &tStart);
     cudaMemcpy(gatherStatus, deviceGatherStatus, currentBatchSize * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&missCount, devMissCount, sizeof(int), cudaMemcpyDeviceToHost);
     totalBatch++;  
+    clock_gettime(CLOCK_MONOTONIC, &tEnd);
+    statusMemcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
+
+    
     if(missCount > 0){
         missingBatch++;
         Parameters *missingEmbedding, *deviceMissingEmbedding;
         cudaMalloc(&deviceMissingEmbedding, currentBatchSize * sizeof(Parameters));
         missingEmbedding = new Parameters[currentBatchSize];
-        std::cout << missCount << std::endl;  
-        std::cout << currentBatchSize << std::endl;
-        std::cout << totalBatch << std::endl;
 
         //从CPU中查找缺失的Embedding
         //TODO::修改为多线程查找
+        clock_gettime(CLOCK_MONOTONIC, &tStart);
         for(int i = 0; i < currentBatchSize; i++){
             if(gatherStatus[i] <= 0){
                 Parameters *tmp;
@@ -258,18 +264,22 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
                 missingEmbedding[i].frequency = tmp->frequency;
             }
         }
+        clock_gettime(CLOCK_MONOTONIC, &tEnd);
+        lookUpTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 
         //将查询结果拷上GPU
+        clock_gettime(CLOCK_MONOTONIC, &tStart);
         cudaMemcpy(deviceMissingEmbedding, missingEmbedding, currentBatchSize * sizeof(Parameters), cudaMemcpyHostToDevice);
         GatherMissingEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(locks, keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, deviceMissingEmbedding, currentBatchSize);
 
+        clock_gettime(CLOCK_MONOTONIC, &tEnd);
+        memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 
         delete []missingEmbedding;
         cudaFree(deviceMissingEmbedding);
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &tEnd);
-    gatherTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
+
     //将结果拷贝回CPU检验
     cudaMemcpy(&gatherResult[cursor], deviceGatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
 
@@ -303,7 +313,10 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult){
     int cursor = 0;
     int end = line.size();
-    gatherTime = 0;
+    hitTime = 0;
+    statusMemcpyTime = 0;
+    lookUpTime = 0;
+    memcpyTime = 0;
 
     while(end - cursor >= BATCH_SIZE){
         GatherBatch(line, cursor, gatherResult, BATCH_SIZE);
@@ -320,8 +333,20 @@ float CEmbeddingMap::GetMissingBatchRate(){
     return missingBatch / totalBatch;
 }
 
-float CEmbeddingMap::GetGatherTime(){
-    return gatherTime;
+float CEmbeddingMap::GetHitTime(){
+    return hitTime;
+}
+
+float CEmbeddingMap::GetStatusMemcpyTime(){
+    return statusMemcpyTime;
+}
+
+float CEmbeddingMap::GetLookUpTime(){
+    return lookUpTime;
+}
+
+float CEmbeddingMap::GetMemcpyTime(){
+    return memcpyTime;
 }
 
 void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){

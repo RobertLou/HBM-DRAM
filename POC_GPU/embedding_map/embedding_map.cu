@@ -11,7 +11,7 @@ __global__ void UpdateOneEmbedding(Parameters **deviceAddressBatch, int currentB
 
 }
 
-__global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize){
+/* __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     if(i < currentBatchSize){
         for(int j = 0;j < EMBEDDING_DIM;j++){
@@ -19,7 +19,30 @@ __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *dev
             devicegatherResult[i].v[j] = deviceAddressBatch[i]->v[j];
         }
     }
+} */
+
+__global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize){
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int key_index = i / EMBEDDING_DIM;
+    int embedding_index = i % EMBEDDING_DIM;
+    if(i < currentBatchSize * EMBEDDING_DIM){
+        devicegatherResult[key_index].a[embedding_index] = deviceAddressBatch[key_index]->a[embedding_index];
+        devicegatherResult[key_index].v[embedding_index] = deviceAddressBatch[key_index]->v[embedding_index];
+    }
 }
+
+/* __global__ void GatherEmbedding(Parameters **deviceAddressBatch, Parameters *devicegatherResult, int currentBatchSize){
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int key_index = (i / EMBEDDING_DIM) * EMBEDDING_DIM;
+    int embedding_index = i % EMBEDDING_DIM;
+
+    for(int j = 0;j < EMBEDDING_DIM;j++){
+        if(key_index + j < currentBatchSize){
+            devicegatherResult[key_index + j].a[embedding_index] = deviceAddressBatch[key_index + j]->a[embedding_index];
+            devicegatherResult[key_index + j].v[embedding_index] = deviceAddressBatch[key_index + j]->v[embedding_index];
+        }
+    }
+} */
 
 Parameters* CEmbeddingMap::Get(int Key){
     std::shared_lock<std::shared_mutex> lock(a_mutex);
@@ -164,7 +187,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     //Gather 
-    GatherEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
+    GatherEmbedding<<<BATCH_SIZE / nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
     cudaDeviceSynchronize();
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
     ti.gatherD2DMemcpyTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;

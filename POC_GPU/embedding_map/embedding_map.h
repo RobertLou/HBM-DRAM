@@ -14,9 +14,10 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define THREAD_NUM 16
+#define THREAD_NUM 4
 #define EMBEDDING_DIM 128
 #define BATCH_SIZE 256 * 16
+#define WARP_TILE 32
 
 const int nDimBlock = 256;
 

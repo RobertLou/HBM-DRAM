@@ -59,9 +59,9 @@ int main() {
 	std::cout << "Hit Time:" << em.GetHitTime() << "ms" << std::endl;
 	std::cout << "Status Memcpy Time:" << em.GetStatusMemcpyTime() << "ms" << std::endl;
 	std::cout << "LookUp Time:" << em.GetLookUpTime() << "ms" << std::endl;
-	std::cout << "Memcpy Time:" << em.GetMemcpyTime() << "ms" << std::endl;
+	std::cout << "Memcpy Time:" << em.GetMemcpyTime() << "ms\n" << std::endl;
 
-/* 	iTimeCal.StartWork("storing");
+ 	iTimeCal.StartWork("storing");
 	ofEmbeddingMap.open("embedding_map/ofembedding.csv");
 	ofEmbeddingMap << "key,a,v\n";
 	for (int i = 0; i < totalLength; i++) {
@@ -69,7 +69,7 @@ int main() {
 	} 
 	ofEmbeddingMap.close();
 	iTimeCal.EndWork("storing");
-	delete[] gatherResult; */
+	delete[] gatherResult; 
 
 	Parameters *CPUEmbeddingAddress = new Parameters[CACHE_SIZE];
 	std::ofstream cacheEmbedding;

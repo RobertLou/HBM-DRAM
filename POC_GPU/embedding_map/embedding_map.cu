@@ -187,7 +187,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemStart);
     //Gather 
-    GatherEmbedding<<<BATCH_SIZE / nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
+    GatherEmbedding<<<BATCH_SIZE * EMBEDDING_DIM / nDimBlock, nDimBlock>>>(deviceAddressBatch, devicegatherResult, currentBatchSize);
     cudaDeviceSynchronize();
     clock_gettime(CLOCK_MONOTONIC, &ti.tMemEnd);
     ti.gatherD2DMemcpyTime += ((double)(ti.tMemEnd.tv_sec - ti.tMemStart.tv_sec)*1000000000 + ti.tMemEnd.tv_nsec - ti.tMemStart.tv_nsec)/1000000;

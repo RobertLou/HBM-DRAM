@@ -139,20 +139,22 @@ __global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GP
             //更新Cache
             int offset = - deviceGatherStatus[i] - 1;
             GPUEmbeddingAddress[possible_place + offset].key = key;
+            GPUEmbeddingAddress[possible_place + offset].frequency = 0;
             for(int k = 0; k < EMBEDDING_DIM; k++){
                 GPUEmbeddingAddress[possible_place + offset].a[k] = deviceMissingEmbedding[i].a[k];
                 GPUEmbeddingAddress[possible_place + offset].v[k] = deviceMissingEmbedding[i].v[k];
             }
-            GPUEmbeddingAddress[possible_place + offset].frequency = 0;
+            
         }
         else if(deviceGatherStatus[i] == 0){
             //写入Result
             deviceGatherResult[i].key =  key;
+            deviceGatherResult[i].frequency = 0;
             for(int k = 0; k < EMBEDDING_DIM; k++){
                 deviceGatherResult[i].a[k] = deviceMissingEmbedding[i].a[k];
                 deviceGatherResult[i].v[k] = deviceMissingEmbedding[i].v[k];
             }
-            deviceGatherResult[i].frequency = 0;
+            
 
             //更新Cache
             bool blocked = true;
@@ -170,12 +172,12 @@ __global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GP
 
                     //替换
                     GPUEmbeddingAddress[possible_place + minPlace].key = key;
+                    GPUEmbeddingAddress[possible_place + minPlace].frequency = 0;
                     for(int k = 0; k < EMBEDDING_DIM; k++){
                         GPUEmbeddingAddress[possible_place + minPlace].a[k] = deviceMissingEmbedding[i].a[k];
                         GPUEmbeddingAddress[possible_place + minPlace].v[k] = deviceMissingEmbedding[i].v[k];
                     }
-                    GPUEmbeddingAddress[possible_place + minPlace].frequency = 0;
-
+                    
                     atomicExch(&locks[cache_id], 0);
                     blocked = false;
                 }

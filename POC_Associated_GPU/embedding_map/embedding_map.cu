@@ -47,14 +47,14 @@ __global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress,
     }
 }
 
-__global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *devMissCount, int *missIndexList, int *missKeyList, int *lock, int currentBatchSize){
+/* __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *missCount, int *missIndexList, int *missKeyList, int *lock, int limit){
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
     int j;
     if (i == 0){
-        *devMissCount = 0;
+        *missCount = 0;
         *lock = 0;
     }
-    if(i < currentBatchSize){
+    if(i < limit){
         int key = keyBatch[i];
         int cache_id = key % CACHE_NUM;
         int possible_place = cache_id * WAYS;
@@ -72,9 +72,11 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
                 bool blocked = true;
                 while(blocked) {
                     if(0 == atomicCAS(lock, 0, 1)) {
-                        missKeyList[*devMissCount] = key;
-                        missIndexList[*devMissCount] = i;
-                        atomicAdd(devMissCount, 1);
+                        __threadfence();
+                        missKeyList[*missCount] = key;
+                        missIndexList[*missCount] = i;
+                        atomicAdd(missCount, 1);
+                        __threadfence();
                         atomicExch(lock, 0);
                         blocked = false;
                     }
@@ -86,9 +88,69 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
             bool blocked = true;
             while(blocked) {
                 if(0 == atomicCAS(lock, 0, 1)) {
-                    missKeyList[*devMissCount] = key;
-                    missIndexList[*devMissCount] = i;
-                    atomicAdd(devMissCount, 1);
+                    __threadfence();
+                    missKeyList[*missCount] = key;
+                    missIndexList[*missCount] = i;
+                    atomicAdd(missCount, 1);
+                    __threadfence();
+                    atomicExch(lock, 0);
+                    blocked = false;
+                }
+            }
+        }
+    }
+} */
+
+__global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *missCount, int *missIndexList, int *missKeyList, int *lock, int limit){
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int j;
+    if (i == 0){
+        *missCount = 0;
+        *lock = 0;
+    }
+    if(i < limit * EMBEDDING_DIM){
+        int key_index = i / EMBEDDING_DIM;
+        int embedding_index = i % EMBEDDING_DIM;
+        int key = keyBatch[key_index];
+        int cache_id = key % CACHE_NUM;
+        int possible_place = cache_id * WAYS;
+
+        for(j = 0; j < WAYS; j++){
+            if(GPUEmbeddingAddress[possible_place + j].key == key){
+                if(embedding_index == 0){
+                    deviceGatherResult[key_index].key = key;
+                    atomicAdd(&GPUEmbeddingAddress[possible_place + j].frequency, 1);
+                }
+                deviceGatherResult[key_index].a[embedding_index] = GPUEmbeddingAddress[possible_place + j].a[embedding_index];
+                deviceGatherResult[key_index].v[embedding_index] = GPUEmbeddingAddress[possible_place + j].v[embedding_index];
+                break;
+            }
+              
+            if(embedding_index == 0 && GPUEmbeddingAddress[possible_place + j].key == -1){
+                bool blocked = true;
+                while(blocked) {
+                    if(0 == atomicCAS(lock, 0, 1)) {
+                        __threadfence();
+                        missKeyList[*missCount] = key;
+                        missIndexList[*missCount] = key_index;
+                        atomicAdd(missCount, 1);
+                        __threadfence();
+                        atomicExch(lock, 0);
+                        blocked = false;
+                    }
+                }
+                break;
+            }
+        }
+        if(embedding_index == 0  && j == WAYS){
+            bool blocked = true;
+            while(blocked) {
+                if(0 == atomicCAS(lock, 0, 1)) {
+                    __threadfence();
+                    missKeyList[*missCount] = key;
+                    missIndexList[*missCount] = key_index;
+                    atomicAdd(missCount, 1);
+                    __threadfence();
                     atomicExch(lock, 0);
                     blocked = false;
                 }
@@ -97,48 +159,9 @@ __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, 
     }
 }
 
-/* __global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, int *devMissCount, int currentBatchSize){
-	int i = blockDim.x * blockIdx.x + threadIdx.x;
-    int j;
-    if (i == 0){
-        *devMissCount = 0;
-    }
-    if(i < currentBatchSize * EMBEDDING_DIM){
-        int key_index = i / EMBEDDING_DIM;
-        int embedding_index = i % EMBEDDING_DIM;
-        int key = keyBatch[key_index];
-        int cache_id = key % CACHE_NUM;
-        int possible_place = cache_id * WAYS;
-        if(embedding_index == 0){
-            deviceGatherStatus[key_index] = 0;
-        }
-        for(j = 0; j < WAYS; j++){
-            if(GPUEmbeddingAddress[possible_place + j].key == key){
-                if(embedding_index == 0){
-                    deviceGatherResult[key_index].key = key;
-                    deviceGatherStatus[key_index] = j + 1;
-                    atomicAdd(&GPUEmbeddingAddress[possible_place + j].frequency, 1);
-                }
-                deviceGatherResult[key_index].a[embedding_index] = GPUEmbeddingAddress[possible_place + j].a[embedding_index];
-                deviceGatherResult[key_index].v[embedding_index] = GPUEmbeddingAddress[possible_place + j].v[embedding_index];
-                break;
-            }
-              
-            if(embedding_index == 0 && -1 == atomicCAS(&GPUEmbeddingAddress[possible_place + j].key, -1, key)){
-                atomicAdd(devMissCount, 1);
-                deviceGatherStatus[key_index] = -j - 1;
-                break;
-            }
-        }
-        if(embedding_index == 0  && j == WAYS){
-            atomicAdd(devMissCount, 1);
-        }
-    }
-} */
-
-__global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *missIndexList, int *missKeyList, Parameters *deviceMissingEmbedding, int currentBatchSize){
+__global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *missIndexList, int *missKeyList, Parameters *deviceMissingEmbedding, int limit){
     int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if(i < currentBatchSize){
+    if(i < limit){
         int key = missKeyList[i];
         int index = missIndexList[i];
         int cache_id = key % CACHE_NUM;
@@ -173,7 +196,7 @@ __global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GP
                     GPUEmbeddingAddress[possible_place + minPlace].a[k] = deviceMissingEmbedding[i].a[k];
                     GPUEmbeddingAddress[possible_place + minPlace].v[k] = deviceMissingEmbedding[i].v[k];
                 }
-                
+                __threadfence();
                 atomicExch(&locks[cache_id], 0);
                 blocked = false;
             }
@@ -268,7 +291,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     int missCount = 0, *devMissCount;
     cudaMalloc((void **)&devMissCount, sizeof(int));
     //Gather 
-    GatherEmbedding<<<(BATCH_SIZE + nDimBlock - 1) / nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, deviceGatherResult, devMissCount, deviceMissIndexList, deviceMissKeyList, devMissLock, currentBatchSize);
+    GatherEmbedding<<<(BATCH_SIZE * EMBEDDING_DIM + nDimBlock - 1) / nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, deviceGatherResult, devMissCount, deviceMissIndexList, deviceMissKeyList, devMissLock, currentBatchSize);
     
     cudaDeviceSynchronize();
 
@@ -306,6 +329,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
         }
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
         lookUpTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
+        
         //将查询结果拷上GPU
         clock_gettime(CLOCK_MONOTONIC, &tStart);
         cudaMemcpy(deviceMissingEmbedding, missingEmbedding, missCount * sizeof(Parameters), cudaMemcpyHostToDevice);

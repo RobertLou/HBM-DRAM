@@ -4,16 +4,16 @@
 
 __global__ void write(int *count, int *a, int length, int *lock){
     int i = blockDim.x * blockIdx.x + threadIdx.x;
-    //__shared__ int lock;
     if(i == 0)
         *lock = 0;
     if(i < length){
         bool blocked = true;
         while(blocked) {
             if(0 == atomicCAS(lock, 0, 1)) {
-                //*count = *count + 1;
-                atomicAdd(count, 1);
+                *count = *count + 1;
+                //atomicAdd(count, 1);
                 a[i] = *count;
+                __threadfence();
                 atomicExch(lock, 0);
                 blocked = false;
             }

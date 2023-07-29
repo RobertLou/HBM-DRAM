@@ -177,7 +177,6 @@ __global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GP
                         GPUEmbeddingAddress[possible_place + minPlace].a[k] = deviceMissingEmbedding[i].a[k];
                         GPUEmbeddingAddress[possible_place + minPlace].v[k] = deviceMissingEmbedding[i].v[k];
                     }
-                    
                     atomicExch(&locks[cache_id], 0);
                     blocked = false;
                 }
@@ -312,7 +311,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
         clock_gettime(CLOCK_MONOTONIC, &tStart);
         cudaMemcpy(deviceMissingEmbedding, missingEmbedding, currentBatchSize * sizeof(Parameters), cudaMemcpyHostToDevice);
         GatherMissingEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(locks, keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, deviceMissingEmbedding, currentBatchSize);
-
+        cudaDeviceSynchronize();
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
         memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 

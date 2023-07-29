@@ -305,18 +305,21 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     clock_gettime(CLOCK_MONOTONIC, &tEnd);
     statusMemcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 
-    if(missCount > 0){
+    if(missCount > 0){        
+        clock_gettime(CLOCK_MONOTONIC, &tStart);
         missingBatch++;
         Parameters *missingEmbedding, *deviceMissingEmbedding;
         cudaMalloc(&deviceMissingEmbedding, missCount * sizeof(Parameters));
         missingEmbedding = new Parameters[missCount];
         
-
+        
         cudaMemcpy(missKeyList, deviceMissKeyList, sizeof(int) * missCount, cudaMemcpyDeviceToHost);
+        clock_gettime(CLOCK_MONOTONIC, &tEnd);
+        memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
+
+        clock_gettime(CLOCK_MONOTONIC, &tStart);
         //从CPU中查找缺失的Embedding
         //TODO::修改为多线程查找
-        clock_gettime(CLOCK_MONOTONIC, &tStart);
-
         for(int i = 0; i < missCount; i++){
             Parameters *tmp;
             tmp = Get(missKeyList[i]);
@@ -334,6 +337,7 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
         clock_gettime(CLOCK_MONOTONIC, &tStart);
         cudaMemcpy(deviceMissingEmbedding, missingEmbedding, missCount * sizeof(Parameters), cudaMemcpyHostToDevice);
         GatherMissingEmbedding<<<(missCount + nDimBlock - 1) / nDimBlock, nDimBlock>>>(locks, keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceMissIndexList, deviceMissKeyList, deviceMissingEmbedding, missCount);
+        cudaDeviceSynchronize();
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
         memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 

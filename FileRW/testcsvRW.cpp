@@ -2,14 +2,14 @@
 
 int main() {
 	std::string fileloc;
-	fileloc = "../../../dataset/ad_feature.csv";
+	fileloc = "../dataset/ad_feature.csv";
 	
 	std::vector<int> lines;
 	
-	readcsv(fileloc,lines,3,1);
+	readcsv(fileloc, lines, 2, 1);
 
 	std::ofstream a;
-	a.open("a.txt"); 
+	a.open("lookup_keys.txt"); 
 	for (auto iter = lines.cbegin(); iter != lines.cend(); iter++) {
 		a << *iter << std::endl;
 	}

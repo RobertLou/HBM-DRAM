@@ -1,7 +1,7 @@
 #include <iostream>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-#include "../time/timecalculate.h"
+#include "../../time/timecalculate.h"
 
 __global__ void prefixSum(int* input, int* output, int n) {
     extern __shared__ int temp[2048];  // 共享内存用于存储中间结果

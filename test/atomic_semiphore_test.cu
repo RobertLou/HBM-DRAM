@@ -5,66 +5,49 @@
 #include <cuda/std/semaphore>
 #include "device_launch_parameters.h"
 
-#define WARP_SIZE 32
-
 namespace cg = cooperative_groups;
 
 using atomic_ref_counter_type = cuda::atomic<int, cuda::thread_scope_device>;
 
-__global__ void add(int *a, int *b, atomic_ref_counter_type *global_counter,int N){
-    cg::thread_block_tile<WARP_SIZE> warp_tile =
-        cg::tiled_partition<WARP_SIZE>(cg::this_thread_block());
-    const size_t lane_idx = warp_tile.thread_rank();
-    
+__global__ void add(atomic_ref_counter_type *global_counter, int N){
     int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if(i == 0){
-        new (global_counter) atomic_ref_counter_type(0);
-    }
     if(i < N){
-        a[i] = i;
-        b[i] = warp_tile.meta_group_rank();
         global_counter->fetch_add(1, cuda::std::memory_order_relaxed);
     }
-    
+}
+
+__global__ void add2(int *global_counter, int N){
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if(i < N){
+        atomicAdd(global_counter, 1);
+    }
 }
 
 
 int main(){
-
-    int *a, *b;
-    int *dev_a, *dev_b;
     atomic_ref_counter_type *global_counter;
     atomic_ref_counter_type check_global_counter;
-    int size = 1000;
 
-    a = (int *)malloc(sizeof(int) * size);
-    b = (int *)malloc(sizeof(int) * size);
-    
-    cudaMalloc((void**)&dev_a, sizeof(int) * size);
-    cudaMalloc((void**)&dev_b, sizeof(int) * size);
+    int *h_global_counter, *d_global_counter;
+    int size = 10000;
+
     cudaMalloc((void**)&global_counter, sizeof(atomic_ref_counter_type));
 
-    for(int i = 0; i < size; i++){
-        a[i] = 1;
-        b[i] = 2;
-    }
+    h_global_counter = (int *)malloc(sizeof(int));
+    cudaMalloc((void**)&d_global_counter, sizeof(int));
 
-    cudaMemcpy(dev_a, a, sizeof(int) * size, cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_b, b, sizeof(int) * size, cudaMemcpyHostToDevice);
+    *h_global_counter = 0;
+    cudaMemcpy(d_global_counter, h_global_counter, sizeof(atomic_ref_counter_type), cudaMemcpyHostToDevice);
+    
 
-
-    add<<<(size + 127) / 128, 128>>>(dev_a, dev_b, global_counter, size);
+    add<<<(size + 127) / 128, 128>>>(global_counter, size);
+    add2<<<(size + 127) / 128, 128>>>(d_global_counter, size);
     cudaDeviceSynchronize();
 
-
-
-    cudaMemcpy(a, dev_a, sizeof(int) * size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(b, dev_b, sizeof(int) * size, cudaMemcpyDeviceToHost);
     cudaMemcpy(&check_global_counter, global_counter, sizeof(atomic_ref_counter_type), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_global_counter, d_global_counter, sizeof(int), cudaMemcpyDeviceToHost);
 
-    for(int i = 0; i < size; i++){
-        std::cout << a[i] << "," << b[i] << std::endl;
-    }
     std::cout << check_global_counter << std::endl;
+    std::cout << *h_global_counter << std::endl;
     return 0;
 }

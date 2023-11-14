@@ -1,10 +1,13 @@
 #include "../../time/timecalculate.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include <cooperative_groups.h>
 #include <iostream>
 
 #define MAX_THREADS_PER_BLOCK 256
 #define MAX_ELEMENTS_PER_BLOCK (MAX_THREADS_PER_BLOCK * 2)
+
+namespace cg = cooperative_groups;
 
 __global__ void parallel_large_scan_kernel(int *data, int *prefix_sum, int N, int *sums)
 {
@@ -116,23 +119,22 @@ __global__ void parallel_large_scan_kernel(int *data, int *prefix_sum, int N, in
         }
     }
 
-}
-
-__global__ void add_kernel(int *prefix_sum, int *value, int N)
-{
-    int tid = threadIdx.x;
-    int bid = blockIdx.x;
-    int block_offset = bid * MAX_ELEMENTS_PER_BLOCK;
-    int ai = tid + block_offset;
-    int bi = tid + (MAX_ELEMENTS_PER_BLOCK >> 1) + block_offset;
-
-    if (ai < N)
+    if (block_num > 1)
     {
-        prefix_sum[ai] += value[bid];
-    }
-    if (bi < N)
-    {
-        prefix_sum[bi] += value[bid];
+
+        cg::grid_group grid = cg::this_grid();
+        grid.sync();
+        int ai = tid + block_offset;
+        int bi = tid + (MAX_ELEMENTS_PER_BLOCK >> 1) + block_offset;
+
+        if (ai < N)
+        {
+            prefix_sum[ai] += sums[bid];
+        }
+        if (bi < N)
+        {
+            prefix_sum[bi] += sums[bid];
+        }
     }
 }
 
@@ -143,12 +145,11 @@ void recursive_scan(int *d_data, int *d_prefix_sum, int N)
 
     cudaHostAlloc(&d_sums, block_num * sizeof(int), cudaHostAllocDefault);
 
-    parallel_large_scan_kernel<<<block_num, MAX_THREADS_PER_BLOCK>>>(d_data, d_prefix_sum, N, d_sums);
-
-    if (block_num != 1)
-    {
-        add_kernel<<<block_num, MAX_THREADS_PER_BLOCK>>>(d_prefix_sum, d_sums, N);
-    }
+    void *kernelArgs[] = {(void *)&d_data,
+                          (void *)&d_prefix_sum,
+                          (void *)&N,
+                          (void *)&d_sums};
+    cudaLaunchCooperativeKernel((void *)parallel_large_scan_kernel, block_num, MAX_THREADS_PER_BLOCK, kernelArgs);
     cudaFreeHost(d_sums);
 }
 
@@ -157,7 +158,7 @@ int main()
     int *in, *out;
     CTimeCalculate iTimeCal;
 
-    int size = 11111;
+    int size = 1 << 16 - 1;
 
     cudaHostAlloc(&in, sizeof(int) * size, cudaHostAllocDefault);
     cudaHostAlloc(&out, sizeof(int) * (size + 1), cudaHostAllocDefault);

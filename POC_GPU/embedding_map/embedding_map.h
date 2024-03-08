@@ -16,7 +16,7 @@
 
 #define THREAD_NUM 4
 #define EMBEDDING_DIM 128
-#define BATCH_SIZE 256 * 16
+#define BATCH_SIZE 2048
 #define WARP_TILE 32
 
 const int nDimBlock = 256;

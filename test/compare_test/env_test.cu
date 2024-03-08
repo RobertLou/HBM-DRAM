@@ -2,8 +2,8 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-__global__ void add(){
-    //atomicAdd(global_counter, 1);
+__global__ void add(int *global_counter){
+    atomicAdd(global_counter, 1);
 }
 
 int main(){
@@ -13,7 +13,7 @@ int main(){
     cudaMalloc((void**)&d_global_counter, sizeof(int));
     
     for(int i = 0;i < size;i++){
-        add<<<1, 1>>>();
+        add<<<1, 1>>>(d_global_counter);
     }
 
     cudaDeviceSynchronize();

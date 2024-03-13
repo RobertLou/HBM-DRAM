@@ -15,139 +15,416 @@ void CEmbeddingMap::Erase(int key){
 	a_map.erase(key);
 }
 
-__global__ void InitEmptyCache(Parameters *GPUEmbeddingAddress){
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-    GPUEmbeddingAddress[i].key = -1;
+__device__ void warp_tile_copy(const int lane_idx,
+                                               const int emb_vec_size_in_float, float* d_dst,
+                                               const float* d_src) {
+#pragma unroll
+  for (int i = lane_idx; i < emb_vec_size_in_float; i += WARP_SIZE) {
+    d_dst[i] = d_src[i];
+  }
 }
 
-__global__ void DeviceInitEmbedding(int *locks, Parameters *GPUEmbeddingAddress, Parameters *AllGPUEmbeddings, int length){
-	int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if(i < length){
-        int key = AllGPUEmbeddings[i].key;
-        int cache_id = key % CACHE_NUM;
-        int possible_place = cache_id * WAYS;
-        bool blocked = true;
-        while(blocked) {
-            if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
-                for(int j = 0;j < WAYS;j++){
-                    if(GPUEmbeddingAddress[possible_place + j].key == -1){
-                        GPUEmbeddingAddress[possible_place + j].key = key;
-                        for(int k = 0; k < EMBEDDING_DIM; k++){
-                            GPUEmbeddingAddress[possible_place + j].a[k] = AllGPUEmbeddings[i].a[k];
-                            GPUEmbeddingAddress[possible_place + j].v[k] = AllGPUEmbeddings[i].v[k];
-                        }
-                        GPUEmbeddingAddress[possible_place + j].frequency = 0;
-                        break;
-                    }
-                }
-                atomicExch(&locks[cache_id], 0);
-                blocked = false;
-            }
-        }
-    }
+// Will be called by multiple thread_block_tile((sub-)warp) on the same mutex
+// Expect only one thread_block_tile return to execute critical section at any time
+__forceinline__ __device__ void warp_lock_mutex(const cg::thread_block_tile<WARP_SIZE>& warp_tile,
+                                                 int& set_mutex) {
+  // The first thread of this (sub-)warp to acquire the lock
+  if (warp_tile.thread_rank() == 0) {
+    while (0 == atomicCAS((int*)&set_mutex, 1, 0))
+      ;
+  }
+  __threadfence();
+  warp_tile.sync();  // Synchronize the threads in the (sub-)warp. Execution barrier + memory fence
 }
 
-__global__ void GatherEmbedding(int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, int *devMissCount, int currentBatchSize){
-	int i = blockDim.x * blockIdx.x + threadIdx.x;
-    int j;
-    if (i == 0){
-        *devMissCount = 0;
-    }
-    if(i < currentBatchSize * EMBEDDING_DIM){
-        int key_index = i / EMBEDDING_DIM;
-        int embedding_index = i % EMBEDDING_DIM;
-        int key = keyBatch[key_index];
-        int cache_id = key % CACHE_NUM;
-        int possible_place = cache_id * WAYS;
-        if(embedding_index == 0){
-            deviceGatherStatus[key_index] = 0;
-        }
-        for(j = 0; j < WAYS; j++){
-            if(GPUEmbeddingAddress[possible_place + j].key == key){
-                if(embedding_index == 0){
-                    deviceGatherResult[key_index].key = key;
-                    deviceGatherStatus[key_index] = j + 1;
-                    atomicAdd(&GPUEmbeddingAddress[possible_place + j].frequency, 1);
-                }
-                deviceGatherResult[key_index].a[embedding_index] = GPUEmbeddingAddress[possible_place + j].a[embedding_index];
-                deviceGatherResult[key_index].v[embedding_index] = GPUEmbeddingAddress[possible_place + j].v[embedding_index];
-                break;
-            }
-              
-            if(embedding_index == 0 && -1 == atomicCAS(&GPUEmbeddingAddress[possible_place + j].key, -1, key)){
-                atomicAdd(devMissCount, 1);
-                deviceGatherStatus[key_index] = -j - 1;
-                break;
-            }
-        }
-        if(embedding_index == 0  && j == WAYS){
-            atomicAdd(devMissCount, 1);
-        }
-    }
+// The (sub-)warp holding the mutex will unlock the mutex after finishing the critical section on a
+// set Expect any following (sub-)warp that acquire the mutex can see its modification done in the
+// critical section
+__forceinline__ __device__ void warp_unlock_mutex(const cg::thread_block_tile<WARP_SIZE>& warp_tile,
+                                                   int& set_mutex) {
+  __threadfence();
+  warp_tile.sync();  // Synchronize the threads in the (sub-)warp. Execution barrier + memory fence
+  // The first thread of this (sub-)warp to release the lock
+  if (warp_tile.thread_rank() == 0) {
+    atomicExch((int*)&set_mutex, 1);
+  }
 }
 
-__global__ void GatherMissingEmbedding(int *locks, int *keyBatch, Parameters *GPUEmbeddingAddress, Parameters *deviceGatherResult, int *deviceGatherStatus, Parameters *deviceMissingEmbedding, int currentBatchSize){
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-    if(i < currentBatchSize){
-        int key = keyBatch[i];
-        int cache_id = key % CACHE_NUM;
-        int possible_place = cache_id * WAYS;
-        if(deviceGatherStatus[i] < 0){
-            //写入Result
-            deviceGatherResult[i].key =  key;
-            for(int k = 0; k < EMBEDDING_DIM; k++){
-                deviceGatherResult[i].a[k] = deviceMissingEmbedding[i].a[k];
-                deviceGatherResult[i].v[k] = deviceMissingEmbedding[i].v[k];
-            }
-            deviceGatherResult[i].frequency = 0;
+// The (sub-)warp doing all reduction to find the slot with min slot_counter
+// The slot with min slot_counter is the LR slot.
+__forceinline__ __device__ void warp_min_reduction(
+    const cg::thread_block_tile<WARP_SIZE>& warp_tile, int& min_slot_counter_val,
+    int& slab_distance, int& slot_distance) {
+  const int lane_idx = warp_tile.thread_rank();
+  slot_distance = lane_idx;
 
-            //更新Cache
-            int offset = - deviceGatherStatus[i] - 1;
-            GPUEmbeddingAddress[possible_place + offset].key = key;
-            GPUEmbeddingAddress[possible_place + offset].frequency = 0;
-            for(int k = 0; k < EMBEDDING_DIM; k++){
-                GPUEmbeddingAddress[possible_place + offset].a[k] = deviceMissingEmbedding[i].a[k];
-                GPUEmbeddingAddress[possible_place + offset].v[k] = deviceMissingEmbedding[i].v[k];
-            }
-            
+  for (int i = (warp_tile.size() >> 1); i > 0; i = i >> 1) {
+    int input_slot_counter_val = warp_tile.shfl_xor(min_slot_counter_val, (int)i);
+    int input_slab_distance = warp_tile.shfl_xor(slab_distance, (int)i);
+    int input_slot_distance = warp_tile.shfl_xor(slot_distance, (int)i);
+
+    if (input_slot_counter_val == min_slot_counter_val) {
+      if (input_slab_distance == slab_distance) {
+        if (input_slot_distance < slot_distance) {
+          slot_distance = input_slot_distance;
         }
-        else if(deviceGatherStatus[i] == 0){
-            //写入Result
-            deviceGatherResult[i].key =  key;
-            deviceGatherResult[i].frequency = 0;
-            for(int k = 0; k < EMBEDDING_DIM; k++){
-                deviceGatherResult[i].a[k] = deviceMissingEmbedding[i].a[k];
-                deviceGatherResult[i].v[k] = deviceMissingEmbedding[i].v[k];
-            }
-            
-
-            //更新Cache
-            bool blocked = true;
-            int minFreq = 99999;
-            int minPlace = -1;
-            while(blocked) {
-                if(0 == atomicCAS(&locks[cache_id], 0, 1)) {
-                    //寻找可替换位置
-                    for(int j = 0;j < WAYS;j++){
-                        if(GPUEmbeddingAddress[possible_place + j].frequency < minFreq){
-                            minFreq = GPUEmbeddingAddress[possible_place + j].frequency;
-                            minPlace = j;
-                        }
-                    }
-
-                    //替换
-                    GPUEmbeddingAddress[possible_place + minPlace].key = key;
-                    GPUEmbeddingAddress[possible_place + minPlace].frequency = 0;
-                    for(int k = 0; k < EMBEDDING_DIM; k++){
-                        GPUEmbeddingAddress[possible_place + minPlace].a[k] = deviceMissingEmbedding[i].a[k];
-                        GPUEmbeddingAddress[possible_place + minPlace].v[k] = deviceMissingEmbedding[i].v[k];
-                    }
-                    atomicExch(&locks[cache_id], 0);
-                    blocked = false;
-                }
-            }
-        }
+      } else if (input_slab_distance < slab_distance) {
+        slab_distance = input_slab_distance;
+        slot_distance = input_slot_distance;
+      }
+    } else if (input_slot_counter_val < min_slot_counter_val) {
+      min_slot_counter_val = input_slot_counter_val;
+      slab_distance = input_slab_distance;
+      slot_distance = input_slot_distance;
     }
+  }
+}
+
+__global__ void update_kernel_overflow_ignore(int* global_counter,
+                                              int* d_missing_len) {
+  // Update global counter
+  atomicAdd(global_counter, 1);
+  *d_missing_len = 0;
+}
+
+__global__ void init_cache(slab_set* keys, int* slot_counter,
+                           int* global_counter, const int num_slot,
+                           const int empty_key, int* set_mutex, const int capacity_in_set) {
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < num_slot) {
+    // Set the key of this slot to unused key
+    // Flatten the cache
+    int* key_slot = (int*)keys;
+    key_slot[idx] = empty_key;
+
+    // Clear the counter for this slot
+    slot_counter[idx] = 0;
+  }
+  // First CUDA thread clear the global counter
+  if (idx == 0) {
+    global_counter[idx] = 0;
+  }
+
+  // First capacity_in_set CUDA thread initialize mutex
+  if (idx < capacity_in_set) {
+    set_mutex[idx] = 1;
+  }
+}
+
+// Kernel to read from cache
+// Also update locality information for touched slot
+__global__ void get_kernel(const int* d_keys, const int len, float* d_values,
+                           const int embedding_vec_size, int* d_missing_index,
+                           int* d_missing_keys, int* d_missing_len, int* miss_count,
+                           int* global_counter,
+                           int* slot_counter, const int capacity_in_set,
+                           slab_set* keys, float* vals, int* set_mutex,
+                           const int task_per_warp_tile) {
+  int empty_key = -1;
+  // Lane(thread) ID within a warp_tile
+  cg::thread_block_tile<WARP_SIZE> warp_tile =
+      cg::tiled_partition<WARP_SIZE>(cg::this_thread_block());
+  const int lane_idx = warp_tile.thread_rank();
+  // Warp tile global ID
+  const int warp_tile_global_idx =
+      (blockIdx.x * (blockDim.x / WARP_SIZE)) + warp_tile.meta_group_rank();
+  // The index of key for this thread
+  const int key_idx = (warp_tile_global_idx * task_per_warp_tile) + lane_idx;
+  // The assigned key for this lane(thread)
+  int key;
+  // The dst slabset and the dst slab inside this set
+  int src_set;
+  int src_slab;
+  // The variable that contains the missing key
+  int missing_key;
+  // The variable that contains the index for the missing key
+  uint64_t missing_index;
+  // The counter for counting the missing key in this warp
+  uint8_t warp_missing_counter = 0;
+  // Active flag: whether current lane(thread) has unfinished task
+  bool active = false;
+  if (lane_idx < task_per_warp_tile) {
+    if (key_idx < len) {
+      active = true;
+      key = d_keys[key_idx];
+      src_set = key % capacity_in_set;
+      src_slab = key % SET_ASSOCIATIVITY;
+    }
+  }
+
+  // Lane participate in warp_tile ballot to produce warp-level work queue
+  unsigned active_mask = warp_tile.ballot(active);
+
+  // The warp-level outer loop: finish all the tasks within the work queue
+  while (active_mask != 0) {
+    // Next task in the work quere, start from lower index lane(thread)
+    int next_lane = __ffs(active_mask) - 1;
+    // Broadcast the task and the global index to all lane in the warp_tile
+    int next_key = warp_tile.shfl(key, next_lane);
+    int next_idx = warp_tile.shfl(key_idx, next_lane);
+    int next_set = warp_tile.shfl(src_set, next_lane);
+    int next_slab = warp_tile.shfl(src_slab, next_lane);
+
+    // Counter to record how many slab have been searched
+    int counter = 0;
+
+    // Working queue before task started
+    const unsigned old_active_mask = active_mask;
+
+    // Lock the slabset before operating the slabset
+    //warp_lock_mutex(warp_tile, set_mutex[next_set]);
+
+    // The warp-level inner loop: finish a single task in the work queue
+    while (active_mask == old_active_mask) {
+      // When all the slabs inside a slabset have been searched, mark missing task, task is
+      // completed
+      if (counter >= SET_ASSOCIATIVITY) {
+        if (lane_idx == warp_missing_counter) {
+          missing_key = next_key;
+          missing_index = next_idx;
+        }
+
+        if (lane_idx == (int)next_lane) {
+          active = false;
+        }
+
+        warp_missing_counter++;
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // The warp_tile read out the slab
+      int read_key = ((int*)(keys[next_set].set_[next_slab].slab_))[lane_idx];
+
+      // Compare the slab data with the target key
+      int found_lane = __ffs(warp_tile.ballot(read_key == next_key)) - 1;
+
+      // If found, mark hit task, copy the founded data, the task is completed
+      if (found_lane >= 0) {
+        int found_offset = (next_set * SET_ASSOCIATIVITY + next_slab) * WARP_SIZE + found_lane;
+        if (lane_idx == (int)next_lane) {
+          slot_counter[found_offset] = atomicAdd(global_counter, 0);
+          active = false;
+        }
+
+        warp_tile_copy(lane_idx, embedding_vec_size,
+                                  (float*)(d_values + next_idx * embedding_vec_size),
+                                  (float*)(vals + found_offset * embedding_vec_size));
+
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // Compare the slab data with empty key, if found empty key, mark missing task, task is
+      // completed
+      if (warp_tile.ballot(read_key == empty_key) != 0) {
+        if (lane_idx == warp_missing_counter) {
+          missing_key = next_key;
+          missing_index = next_idx;
+        }
+
+        if (lane_idx == (int)next_lane) {
+          active = false;
+        }
+
+        warp_missing_counter++;
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // Not found in this slab, the task is not completed, goto searching next slab
+      counter++;
+      next_slab = (next_slab + 1) % SET_ASSOCIATIVITY;
+    }
+
+    // Unlock the slabset after operating the slabset
+    //warp_unlock_mutex(warp_tile, set_mutex[next_set]);
+  }
+
+  // After warp_tile complete the working queue, save the result for output
+  // First thread of the warp_tile accumulate the missing length to global variable
+  int warp_position;
+  if (lane_idx == 0) {
+    if(warp_missing_counter > 0){
+      warp_position = atomicAdd(d_missing_len, (int)warp_missing_counter);
+    }
+  }
+  warp_position = warp_tile.shfl(warp_position, 0);
+
+  if (lane_idx < warp_missing_counter) {
+    d_missing_keys[warp_position + lane_idx] = missing_key;
+    d_missing_index[warp_position + lane_idx] = missing_index;
+  }
+
+  __threadfence();
+  *miss_count = *d_missing_len;
+}
+
+__global__ void CopyMissingToOutput(float* output, float* memcpy_buffer_gpu, int *missing_index, int value_len, int miss_count) {
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  int item_id = i / value_len;
+  int item_pos = i % value_len;
+
+  if (item_id < miss_count) {
+    output[missing_index[item_id]] = memcpy_buffer_gpu[item_id * value_len + item_pos];
+  }
+}
+
+__global__ void insert_replace_kernel(const int* d_keys, const float* d_values,
+                                      const int embedding_vec_size, const int len,
+                                      slab_set* keys,  float* vals,
+                                      int* slot_counter,
+                                      int* set_mutex, int* global_counter,
+                                      const int capacity_in_set,
+                                      const int task_per_warp_tile) {
+  int empty_key = -1;
+  // Lane(thread) ID within a warp_tile
+  cg::thread_block_tile<WARP_SIZE> warp_tile =
+      cg::tiled_partition<WARP_SIZE>(cg::this_thread_block());
+  const int lane_idx = warp_tile.thread_rank();
+  // Warp tile global ID
+  const int warp_tile_global_idx =
+      (blockIdx.x * (blockDim.x / WARP_SIZE)) + warp_tile.meta_group_rank();
+  // The index of key for this thread
+  const int key_idx = (warp_tile_global_idx * task_per_warp_tile) + lane_idx;
+  // The assigned key for this lane(thread)
+  int key;
+  // The dst slabset and the dst slab inside this set
+  int src_set;
+  int src_slab;
+  // Active flag: whether current lane(thread) has unfinished task
+  bool active = false;
+  if (lane_idx < task_per_warp_tile) {
+    if (key_idx < len) {
+      active = true;
+      key = d_keys[key_idx];
+      src_set = key % capacity_in_set;
+      src_slab = key % SET_ASSOCIATIVITY;
+    }
+  }
+
+  // Lane participate in warp_tile ballot to produce warp-level work queue
+  unsigned active_mask = warp_tile.ballot(active);
+
+  // The warp-level outer loop: finish all the tasks within the work queue
+  while (active_mask != 0) {
+    // Next task in the work quere, start from lower index lane(thread)
+    int next_lane = __ffs(active_mask) - 1;
+    // Broadcast the task, the global index and the src slabset and slab to all lane in a warp_tile
+    int next_key = warp_tile.shfl(key, next_lane);
+    int next_idx = warp_tile.shfl(key_idx, next_lane);
+    int next_set = warp_tile.shfl(src_set, next_lane);
+    int next_slab = warp_tile.shfl(src_slab, next_lane);
+    int first_slab = next_slab;
+
+    // Counter to record how many slab have been searched
+    int counter = 0;
+
+    // Variable to keep the min slot counter during the probing
+    int max_int = 9999999;
+    int max_slab_distance = 9999999;
+    int min_slot_counter_val = max_int;
+    // Variable to keep the slab distance for slot with min counter
+    int slab_distance = max_slab_distance;
+    // Variable to keep the slot distance for slot with min counter within the slab
+    int slot_distance;
+    // Working queue before task started
+    const unsigned old_active_mask = active_mask;
+
+    // Lock the slabset before operating the slabset
+    warp_lock_mutex(warp_tile, set_mutex[next_set]);
+
+    // The warp-level inner loop: finish a single task in the work queue
+    while (active_mask == old_active_mask) {
+      // When all the slabs inside a slabset have been searched
+      // and no empty slots or target slots are found. Replace with LRU
+      if (counter >= SET_ASSOCIATIVITY) {
+        // (sub)Warp all-reduction, the reduction result store in all threads
+        warp_min_reduction(warp_tile, min_slot_counter_val,
+                                                        slab_distance, slot_distance);
+
+        // Calculate the position of LR slot
+        int target_slab = (first_slab + slab_distance) % SET_ASSOCIATIVITY;
+        int slot_index =
+            (next_set * SET_ASSOCIATIVITY + target_slab) * WARP_SIZE + slot_distance;
+
+        // Replace the LR slot
+        if (lane_idx == (int)next_lane) {
+          (( int*)(keys[next_set].set_[target_slab].slab_))[slot_distance] = key;
+          slot_counter[slot_index] = atomicAdd(global_counter, 0);
+        }
+
+        warp_tile_copy(lane_idx, embedding_vec_size,
+                                  ( float*)(vals + slot_index * embedding_vec_size),
+                                  ( float*)(d_values + next_idx * embedding_vec_size));
+
+        // Replace complete, mark this task completed
+        if (lane_idx == (int)next_lane) {
+          active = false;
+        }
+
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // The warp_tile read out the slab
+      int read_key = (( int*)(keys[next_set].set_[next_slab].slab_))[lane_idx];
+
+      // Compare the slab data with the target key
+      int found_lane = __ffs(warp_tile.ballot(read_key == next_key)) - 1;
+
+      // If found target key, the insertion/replace is no longer needed.
+      // Refresh the slot, the task is completed
+      if (found_lane >= 0) {
+        int found_offset = (next_set * SET_ASSOCIATIVITY + next_slab) * WARP_SIZE + found_lane;
+        if (lane_idx == (int)next_lane) {
+          slot_counter[found_offset] = atomicAdd(global_counter, 0);
+          active = false;
+        }
+
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // Compare the slab data with empty key.
+      // If found empty key, do insertion,the task is complete
+      found_lane = __ffs(warp_tile.ballot(read_key == empty_key)) - 1;
+      if (found_lane >= 0) {
+        int found_offset = (next_set * SET_ASSOCIATIVITY + next_slab) * WARP_SIZE + found_lane;
+
+        if (lane_idx == (int)next_lane) {
+          (( int*)(keys[next_set].set_[next_slab].slab_))[found_lane] = key;
+          slot_counter[found_offset] = atomicAdd(global_counter, 0);
+        }
+
+        warp_tile_copy(lane_idx, embedding_vec_size,
+                                  ( float*)(vals + found_offset * embedding_vec_size),
+                                  ( float*)(d_values + next_idx * embedding_vec_size));
+
+        if (lane_idx == (int)next_lane) {
+          active = false;
+        }
+
+        active_mask = warp_tile.ballot(active);
+        break;
+      }
+
+      // If no target or unused slot found in this slab,
+      // Refresh LR info, continue probing
+      int read_slot_counter =
+          slot_counter[(next_set * SET_ASSOCIATIVITY + next_slab) * WARP_SIZE + lane_idx];
+      if (read_slot_counter < min_slot_counter_val) {
+        min_slot_counter_val = read_slot_counter;
+        slab_distance = counter;
+      }
+
+      counter++;
+      next_slab = (next_slab + 1) % SET_ASSOCIATIVITY;
+    }
+
+    // Unlock the slabset after operating the slabset
+    warp_unlock_mutex(warp_tile, set_mutex[next_set]);
+  }
 }
 
 void CEmbeddingMap::InitEmbedding(std::string strFileloc, int bFirstLineDelete){
@@ -187,26 +464,30 @@ void CEmbeddingMap::InitEmbedding(std::string strFileloc, int bFirstLineDelete){
     totalBatch = 0;
     missingBatch = 0;
 
-    //初始化CPU上的embedding map
+    //Initialize CPU embedding map
     auto iter2 = EmbeddingOnDRAM.begin();
     for (auto iter1 = vKey.begin(); iter1 != vKey.end(); iter1++) {
         Set(*iter1,&(*iter2));
         iter2++;
     }
 
-    //初始化组相联Cache的key为-1
-    cudaMalloc((void **)&GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters));
-    InitEmptyCache<<<CACHE_SIZE / nDimBlock, nDimBlock>>>(GPUEmbeddingAddress);
-    
-    cudaMalloc((void**)&locks, CACHE_NUM * sizeof(int));
-    cudaMemset(locks, 0, CACHE_NUM * sizeof(int));
-    int length = EmbeddingOnDRAM.size();
+    //Calculate parameters for SlabSet GPU Cache
+    num_slot_ = CACHE_SIZE;
+    capacity_in_set_ = num_slot_ / (SET_ASSOCIATIVITY * WARP_SIZE);
+    embedding_vec_size_ = EMBEDDING_DIM;
 
-    Parameters *AllGPUEmbeddings;
-    cudaMalloc((void **)&AllGPUEmbeddings, length * sizeof(Parameters));
-    cudaMemcpy(AllGPUEmbeddings, &EmbeddingOnDRAM[0], length * sizeof(Parameters), cudaMemcpyHostToDevice);
+    // Allocate GPU memory for cache
+    cudaMalloc((void **)&keys_, sizeof(slab_set) * capacity_in_set_);
+    cudaMalloc((void **)&vals_, sizeof(float) * embedding_vec_size_ * num_slot_);
+    cudaMalloc((void **)&slot_counter_, sizeof(int) * num_slot_);
+    cudaMalloc((void **)&global_counter_, sizeof(int));
 
-    DeviceInitEmbedding<<<length/nDimBlock + 1, nDimBlock>>>(locks, GPUEmbeddingAddress, AllGPUEmbeddings, length);
+    cudaMalloc((void **)&set_mutex_, sizeof(int) * capacity_in_set_);
+
+    // Initialize GPU embedding map
+    // Initialize the cache, set all entry to unused <K,V>
+    const int empty_key = -1;
+    init_cache<<<((num_slot_ - 1) / BLOCK_SIZE) + 1, BLOCK_SIZE>>>(keys_, slot_counter_, global_counter_, num_slot_, empty_key, set_mutex_, capacity_in_set_);
 
     ifDataSet.close();
 }
@@ -218,55 +499,46 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     cudaMalloc((void **)&keyBatch, currentBatchSize * sizeof(int));
     cudaMemcpy(keyBatch, &line[cursor], currentBatchSize * sizeof(int), cudaMemcpyHostToDevice);
 
+    int *d_missing_len;
+    cudaMalloc((void **)&d_missing_len, sizeof(int));
+
     clock_gettime(CLOCK_MONOTONIC, &tStart);
+    update_kernel_overflow_ignore<<<1, 1>>>(global_counter_, d_missing_len);
 
-    //创建查找到的embedding数据存储的空间
-    Parameters *deviceGatherResult;
-    cudaMalloc((void **)&deviceGatherResult, currentBatchSize * sizeof(Parameters));
+    float* output;
+    int *d_missing_index, *d_missing_keys;
+    int *miss_count;
+    cudaMalloc((void **)&output, currentBatchSize * sizeof(float) * embedding_vec_size_);
+    cudaMalloc((void **)&d_missing_index, currentBatchSize * sizeof(int));
 
-    //创建Status的空间
-    int *deviceGatherStatus,*gatherStatus;
-    cudaMalloc((void **)&deviceGatherStatus, currentBatchSize * sizeof(int));
-    gatherStatus = new int[currentBatchSize]();
+    cudaHostAlloc((void **)&d_missing_keys, currentBatchSize * sizeof(int), cudaHostAllocDefault);
+    cudaHostAlloc((void **)&miss_count, sizeof(int), cudaHostAllocDefault);
 
-    int missCount = 0, *devMissCount;
-    cudaMalloc((void **)&devMissCount, sizeof(int));
+    // Read from the cache
+    // Touch and refresh the hitting slot
+    const int keys_per_block = (BLOCK_SIZE / WARP_SIZE) * 1;
+    const int grid_size = ((currentBatchSize - 1) / keys_per_block) + 1;
 
-    //Gather 
-    GatherEmbedding<<<BATCH_SIZE * EMBEDDING_DIM / nDimBlock, nDimBlock>>>(keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, devMissCount, currentBatchSize);
+    get_kernel<<<grid_size, BLOCK_SIZE>>>(keyBatch, currentBatchSize, output, embedding_vec_size_, d_missing_index, d_missing_keys, d_missing_len, 
+            miss_count, global_counter_, slot_counter_, capacity_in_set_, keys_, vals_, set_mutex_, 1);
     cudaDeviceSynchronize();
 
     clock_gettime(CLOCK_MONOTONIC, &tEnd);
     hitTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
-
-    //如果有缺少的，从CPU上拉取
-    clock_gettime(CLOCK_MONOTONIC, &tStart);
-    cudaMemcpy(gatherStatus, deviceGatherStatus, currentBatchSize * sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&missCount, devMissCount, sizeof(int), cudaMemcpyDeviceToHost);
-    totalBatch++;  
-    clock_gettime(CLOCK_MONOTONIC, &tEnd);
-    statusMemcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
-
     
-    if(missCount > 0){
+    if(*miss_count > 0){
         missingBatch++;
-        Parameters *missingEmbedding, *deviceMissingEmbedding;
-        cudaMalloc(&deviceMissingEmbedding, currentBatchSize * sizeof(Parameters));
-        missingEmbedding = new Parameters[currentBatchSize];
+        float *memcpy_buffer_gpu;
+        cudaHostAlloc((void **)&memcpy_buffer_gpu, currentBatchSize * embedding_vec_size_ * sizeof(float), cudaHostAllocWriteCombined);
 
         //从CPU中查找缺失的Embedding
         //TODO::修改为多线程查找
         clock_gettime(CLOCK_MONOTONIC, &tStart);
-        for(int i = 0; i < currentBatchSize; i++){
-            if(gatherStatus[i] <= 0){
-                Parameters *tmp;
-                tmp = Get(line[cursor + i]);
-                missingEmbedding[i].key = tmp->key;
-                for(int j = 0;j < EMBEDDING_DIM; j++){
-                    missingEmbedding[i].a[j] = tmp->a[j];
-                    missingEmbedding[i].v[j] = tmp->v[j];
-                }
-                missingEmbedding[i].frequency = tmp->frequency;
+        for(int i = 0; i < *miss_count; i++){
+            Parameters *tmp;
+            tmp = Get(d_missing_keys[i]);
+            for(int j = 0;j < EMBEDDING_DIM; j++){
+                memcpy_buffer_gpu[i * EMBEDDING_DIM + j] = tmp->a[j];
             }
         }
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
@@ -274,45 +546,23 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
         //将查询结果拷上GPU
         clock_gettime(CLOCK_MONOTONIC, &tStart);
-        cudaMemcpy(deviceMissingEmbedding, missingEmbedding, currentBatchSize * sizeof(Parameters), cudaMemcpyHostToDevice);
-        GatherMissingEmbedding<<<BATCH_SIZE/nDimBlock, nDimBlock>>>(locks, keyBatch, GPUEmbeddingAddress, deviceGatherResult, deviceGatherStatus, deviceMissingEmbedding, currentBatchSize);
-        cudaDeviceSynchronize();
+        CopyMissingToOutput<<<(*miss_count * embedding_vec_size_ - 1) / BLOCK_SIZE + 1, BLOCK_SIZE>>>(output, memcpy_buffer_gpu, d_missing_index, embedding_vec_size_, *miss_count);
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
         memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 
-        delete []missingEmbedding;
-        cudaFree(deviceMissingEmbedding);
-    }
+        insert_replace_kernel<<<((currentBatchSize - 1) / keys_per_block) + 1, ((*miss_count - 1) / keys_per_block) + 1>>>(d_missing_keys, memcpy_buffer_gpu, 
+                    embedding_vec_size_, *miss_count, keys_, vals_, slot_counter_, set_mutex_, global_counter_, capacity_in_set_, 1);
+    }   
 
+    totalHitCount += currentBatchSize - *miss_count;
+    totalMissCount += *miss_count;
+    totalBatch++;
 
-    //将结果拷贝回CPU检验
-    cudaMemcpy(&gatherResult[cursor], deviceGatherResult, currentBatchSize * sizeof(Parameters), cudaMemcpyDeviceToHost);
-
-    
-    int replaceCount = 0, missCount2 = 0, hitCount = 0;
-    for(int i = 0; i < currentBatchSize;i++){
-        if(gatherStatus[i] == 0){
-            replaceCount++;
-        }
-        else if(gatherStatus[i] < 0){
-            missCount2++;
-        }
-        else if(gatherStatus[i] > 0){
-            hitCount++;
-        }
-    }
-    totalHitCount += hitCount;
-    totalMissCount += missCount;
-    //std::cout << missCount << std::endl;
-    //std::cout << hitCount << "," << replaceCount << "," << missCount2 << std::endl;
-
-
-
-    delete []gatherStatus;
-    cudaFree(devMissCount);
-    cudaFree(deviceGatherStatus);
-    cudaFree(deviceGatherResult);
     cudaFree(keyBatch);
+    cudaFree(d_missing_len);
+    cudaFree(d_missing_index);
+    cudaFreeHost(d_missing_keys);
+    cudaFreeHost(miss_count);
 }
 
 void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult){
@@ -355,11 +605,14 @@ float CEmbeddingMap::GetMemcpyTime(){
 }
 
 void CEmbeddingMap::MoveAllEmbeddings(Parameters *CPUEmbeddingAddress){
-    cudaMemcpy(CPUEmbeddingAddress, GPUEmbeddingAddress, CACHE_SIZE * sizeof(Parameters), cudaMemcpyDeviceToHost);
+   
 }
 
 void CEmbeddingMap::DeleteEmbedding(){
-    cudaFree(locks);
-    cudaFree(GPUEmbeddingAddress);
+    cudaFree(keys_);
+    cudaFree(vals_);
+    cudaFree(set_mutex_);
+    cudaFree(slot_counter_);
+    cudaFree(global_counter_);
 }
 

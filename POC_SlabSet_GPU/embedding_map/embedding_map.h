@@ -13,14 +13,21 @@
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include <cooperative_groups.h>
 
 #define THREAD_NUM 4
 #define EMBEDDING_DIM 128
 #define BATCH_SIZE 2048
-//#define CACHE_SIZE 262144
+#define BLOCK_SIZE 128
 #define CACHE_SIZE 65536
 #define WAYS 8
 #define CACHE_NUM (CACHE_SIZE / WAYS)
+
+// slab for static slab list
+#define WARP_SIZE 32
+#define SET_ASSOCIATIVITY 2
+
+namespace cg = cooperative_groups;
 
 const int nDimBlock = 256;
 
@@ -32,6 +39,15 @@ struct Parameters{
 	float a[EMBEDDING_DIM];	
 	float v[EMBEDDING_DIM]; 	//embedding
 	int frequency;
+};
+
+struct static_slab {
+  int slab_[WARP_SIZE];
+};
+
+// Static slablist(slabset) for GPU Cache
+struct slab_set {
+  static_slab set_[SET_ASSOCIATIVITY];
 };
 
 struct TimeInterval{
@@ -49,8 +65,20 @@ private:
 	std::unordered_map<int, Parameters *> a_map; 	//EmbeddingMap on DRAM
 	std::shared_mutex a_mutex;
 	std::vector<Parameters> EmbeddingOnDRAM;		//Embedding storing place on DRAM
-	Parameters *GPUEmbeddingAddress;				//Embedding storing place on GPU
-	int *locks;			
+	
+	int* set_mutex_ = nullptr;
+	slab_set* keys_ = nullptr;
+  	float* vals_ = nullptr;
+  	int* slot_counter_ = nullptr;
+  	int* global_counter_ = nullptr;					//Embedding storing place on GPU
+
+	// Cache capacity
+	int capacity_in_set_;
+	int num_slot_;
+
+	// Embedding vector size
+	int embedding_vec_size_;
+
 	float totalMissCount, totalHitCount, totalBatch, missingBatch;		
 	timespec tStart, tEnd;					
 	float hitTime, statusMemcpyTime, lookUpTime, memcpyTime;

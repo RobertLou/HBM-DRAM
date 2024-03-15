@@ -506,12 +506,13 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     update_kernel_overflow_ignore<<<1, 1>>>(global_counter_, d_missing_len);
 
     float* output;
-    int *d_missing_index, *d_missing_keys;
+    int *d_missing_index, *h_missing_keys,*d_missing_keys;
     int *miss_count;
     cudaMalloc((void **)&output, currentBatchSize * sizeof(float) * embedding_vec_size_);
     cudaMalloc((void **)&d_missing_index, currentBatchSize * sizeof(int));
+    cudaMalloc((void **)&d_missing_keys, currentBatchSize * sizeof(int));
 
-    cudaHostAlloc((void **)&d_missing_keys, currentBatchSize * sizeof(int), cudaHostAllocDefault);
+    cudaHostAlloc((void **)&h_missing_keys, currentBatchSize * sizeof(int), cudaHostAllocDefault);
     cudaHostAlloc((void **)&miss_count, sizeof(int), cudaHostAllocDefault);
 
     // Read from the cache
@@ -522,23 +523,25 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
     get_kernel<<<grid_size, BLOCK_SIZE>>>(keyBatch, currentBatchSize, output, embedding_vec_size_, d_missing_index, d_missing_keys, d_missing_len, 
             miss_count, global_counter_, slot_counter_, capacity_in_set_, keys_, vals_, set_mutex_, 1);
     cudaDeviceSynchronize();
+    cudaMemcpy(h_missing_keys,d_missing_keys,currentBatchSize * sizeof(int),cudaMemcpyDeviceToHost);
 
     clock_gettime(CLOCK_MONOTONIC, &tEnd);
     hitTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
     
     if(*miss_count > 0){
         missingBatch++;
-        float *memcpy_buffer_gpu;
-        cudaHostAlloc((void **)&memcpy_buffer_gpu, currentBatchSize * embedding_vec_size_ * sizeof(float), cudaHostAllocWriteCombined);
+        float *h_missing_vals, *d_missing_vals;
+        cudaMalloc((void **)&d_missing_vals, currentBatchSize * embedding_vec_size_ * sizeof(float));
+        cudaHostAlloc((void **)&h_missing_vals, currentBatchSize * embedding_vec_size_ * sizeof(float), cudaHostAllocWriteCombined);
 
         //从CPU中查找缺失的Embedding
         //TODO::修改为多线程查找
         clock_gettime(CLOCK_MONOTONIC, &tStart);
         for(int i = 0; i < *miss_count; i++){
             Parameters *tmp;
-            tmp = Get(d_missing_keys[i]);
+            tmp = Get(h_missing_keys[i]);
             for(int j = 0;j < EMBEDDING_DIM; j++){
-                memcpy_buffer_gpu[i * EMBEDDING_DIM + j] = tmp->a[j];
+                h_missing_vals[i * EMBEDDING_DIM + j] = tmp->a[j];
             }
         }
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
@@ -546,23 +549,29 @@ void CEmbeddingMap::GatherBatch(const std::vector<int>& line, int cursor, Parame
 
         //将查询结果拷上GPU
         clock_gettime(CLOCK_MONOTONIC, &tStart);
-        CopyMissingToOutput<<<(*miss_count * embedding_vec_size_ - 1) / BLOCK_SIZE + 1, BLOCK_SIZE>>>(output, memcpy_buffer_gpu, d_missing_index, embedding_vec_size_, *miss_count);
+        cudaMemcpy(d_missing_vals, h_missing_vals, currentBatchSize * embedding_vec_size_ * sizeof(float), cudaMemcpyHostToDevice);
+        CopyMissingToOutput<<<(*miss_count * embedding_vec_size_ - 1) / BLOCK_SIZE + 1, BLOCK_SIZE>>>(output, d_missing_vals, d_missing_index, embedding_vec_size_, *miss_count);
         clock_gettime(CLOCK_MONOTONIC, &tEnd);
         memcpyTime += ((double)(tEnd.tv_sec - tStart.tv_sec)*1000000000 + tEnd.tv_nsec - tStart.tv_nsec)/1000000;
 
-        insert_replace_kernel<<<((currentBatchSize - 1) / keys_per_block) + 1, ((*miss_count - 1) / keys_per_block) + 1>>>(d_missing_keys, memcpy_buffer_gpu, 
+        insert_replace_kernel<<<((currentBatchSize - 1) / keys_per_block) + 1, ((*miss_count - 1) / keys_per_block) + 1>>>(h_missing_keys, d_missing_vals, 
                     embedding_vec_size_, *miss_count, keys_, vals_, slot_counter_, set_mutex_, global_counter_, capacity_in_set_, 1);
-    }   
+        cudaFree(d_missing_vals);
+        cudaFreeHost(h_missing_vals);
+    }
 
     totalHitCount += currentBatchSize - *miss_count;
     totalMissCount += *miss_count;
     totalBatch++;
+    //cudaDeviceSynchronize();
+    //std::cout << output[0] << std::endl;
 
     cudaFree(keyBatch);
     cudaFree(d_missing_len);
     cudaFree(d_missing_index);
-    cudaFreeHost(d_missing_keys);
+    cudaFreeHost(h_missing_keys);
     cudaFreeHost(miss_count);
+    cudaFree(output);
 }
 
 void CEmbeddingMap::GatherWork(const std::vector<int>& line, Parameters *gatherResult){
